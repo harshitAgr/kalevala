@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import os
+import re as _re
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 from anthropic import Anthropic
@@ -55,6 +57,63 @@ def cmd_todo(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def _date_file(cfg: Config, date_str: str) -> Path:
+    y, m, _ = date_str.split("-")
+    return cfg.entries_dir / y / m / f"{date_str}.md"
+
+
+def cmd_show(args: argparse.Namespace, cfg: Config) -> int:
+    target_date = args.date or _today()
+    path = _date_file(cfg, target_date)
+    if not path.exists():
+        print(f"[kalevala] no entry for {target_date}")
+        return 0
+    sys.stdout.write(path.read_text())
+    return 0
+
+
+def cmd_last(args: argparse.Namespace, cfg: Config) -> int:
+    yesterday = (_dt.date.today() - timedelta(days=1)).isoformat()
+    path = _date_file(cfg, yesterday)
+    if not path.exists():
+        print(f"[kalevala] no entry for {yesterday}")
+        return 0
+    sys.stdout.write(path.read_text())
+    return 0
+
+
+def cmd_search(args: argparse.Namespace, cfg: Config) -> int:
+    pattern = _re.compile(_re.escape(args.query), _re.IGNORECASE)
+    any_match = False
+    for entry in sorted(cfg.entries_dir.rglob("*.md")):
+        text = entry.read_text()
+        for i, line in enumerate(text.splitlines(), start=1):
+            if pattern.search(line):
+                any_match = True
+                print(f"{entry.relative_to(cfg.entries_dir)}:{i}: {line.strip()}")
+    if not any_match:
+        print(f"[kalevala] no matches for {args.query!r}")
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace, cfg: Config) -> int:
+    pattern = _re.compile(_re.escape(args.query), _re.IGNORECASE)
+    best: tuple[str, str] | None = None  # (date, session_id)
+    for entry in sorted(cfg.entries_dir.rglob("*.md"), reverse=True):
+        text = entry.read_text()
+        if pattern.search(text):
+            # find last session id in file
+            ids = _re.findall(r"id:\s*([A-Za-z0-9_\-]+)", text)
+            if ids:
+                best = (entry.stem, ids[-1])
+                break
+    if best is None:
+        print(f"[kalevala] no session matched {args.query!r}")
+        return 0
+    print(f"claude --resume {best[1]}  # from {best[0]}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="kalevala")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -65,15 +124,24 @@ def main() -> int:
     p_hook.add_argument("--verify-scrub", action="store_true")
     p_hook.add_argument("--dry-run", action="store_true")
 
-    p_note = sub.add_parser("note")
-    p_note.add_argument("text")
+    p_note = sub.add_parser("note"); p_note.add_argument("text")
+    p_todo = sub.add_parser("todo"); p_todo.add_argument("text")
 
-    p_todo = sub.add_parser("todo")
-    p_todo.add_argument("text")
+    p_show = sub.add_parser("show")
+    p_show.add_argument("date", nargs="?", default=None)
+
+    sub.add_parser("last")
+
+    p_search = sub.add_parser("search"); p_search.add_argument("query")
+    p_resume = sub.add_parser("resume"); p_resume.add_argument("query")
 
     args = parser.parse_args()
     cfg = load_config()
-    handlers = {"hook": cmd_hook, "note": cmd_note, "todo": cmd_todo}
+    handlers = {
+        "hook": cmd_hook, "note": cmd_note, "todo": cmd_todo,
+        "show": cmd_show, "last": cmd_last,
+        "search": cmd_search, "resume": cmd_resume,
+    }
     return handlers[args.cmd](args, cfg)
 
 
