@@ -97,3 +97,15 @@ def test_rewrite_sentinel_to_display():
     assert "«" not in raw
     assert "»" not in raw
     assert "[REDACTED:anthropic]" in raw
+
+
+def test_private_key_long_body_redacted():
+    """RSA-2048-sized body should redact — exercises that our regex doesn't clip at 1000 chars."""
+    import textwrap
+    s = Scrubber()
+    body = textwrap.fill("A" * 1700, width=64)  # ~27 lines
+    text = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----"
+    result, r = s.scrub(text)
+    assert "BEGIN RSA PRIVATE KEY" not in result
+    assert "END RSA PRIVATE KEY" not in result
+    assert r.get("private_key") == 1

@@ -21,7 +21,7 @@ _PATTERNS = [
     ("aws_secret",      re2.compile(r"(?i)aws_secret[^\n]{0,20}[A-Za-z0-9+/=]{40}")),
     ("github",          re2.compile(r"(ghp_|gho_|ghs_|ghu_|github_pat_)[A-Za-z0-9_]{20,}")),
     ("bearer",          re2.compile(r"(?i)authorization:\s*bearer\s+\S+")),
-    ("private_key",     re2.compile(r"-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----[\s\S]{0,1000}?-----END [A-Z ]{0,30}PRIVATE KEY-----")),
+    ("private_key",     re2.compile(r"-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----[\s\S]*?-----END [A-Z ]{0,30}PRIVATE KEY-----")),
     ("jwt",             re2.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
     ("google_api",      re2.compile(r"AIza[0-9A-Za-z\-_]{35}")),
     ("hf_token",        re2.compile(r"hf_[A-Za-z0-9]{20,}")),
