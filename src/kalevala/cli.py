@@ -114,6 +114,36 @@ def cmd_resume(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace, cfg: Config) -> int:
+    import json as _json
+    pending_count = 0
+    if cfg.pending_file.exists():
+        try:
+            pending_count = len(_json.loads(cfg.pending_file.read_text()))
+        except Exception:
+            pass
+    state_file_exists = cfg.state_file.exists()
+    errors_count = 0
+    if cfg.errors_log.exists():
+        errors_count = sum(1 for _ in cfg.errors_log.open())
+    print(f"log_repo: {cfg.log_repo_path}")
+    print(f"state_file: {'ok' if state_file_exists else 'missing'}")
+    print(f"pending: {pending_count}")
+    print(f"errors.log: {errors_count} lines")
+    if cfg.status_file.exists():
+        print("--- last status ---")
+        print(cfg.status_file.read_text())
+    return 0
+
+
+def cmd_drain(args: argparse.Namespace, cfg: Config) -> int:
+    from .pipeline import _drain_pending
+    client = _client()
+    _drain_pending(cfg, client, _today())
+    print("drain complete")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="kalevala")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -135,12 +165,16 @@ def main() -> int:
     p_search = sub.add_parser("search"); p_search.add_argument("query")
     p_resume = sub.add_parser("resume"); p_resume.add_argument("query")
 
+    sub.add_parser("status")
+    sub.add_parser("drain")
+
     args = parser.parse_args()
     cfg = load_config()
     handlers = {
         "hook": cmd_hook, "note": cmd_note, "todo": cmd_todo,
         "show": cmd_show, "last": cmd_last,
         "search": cmd_search, "resume": cmd_resume,
+        "drain": cmd_drain, "status": cmd_status,
     }
     return handlers[args.cmd](args, cfg)
 
