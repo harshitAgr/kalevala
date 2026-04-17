@@ -63,3 +63,24 @@ def test_normalize_paths_walks_dict():
     assert out["summary"] == "edited opet/x.py"
     assert out["files_touched"] == ["opet/x.py", "~/notes.md"]
     assert out["count"] == 3
+
+
+def test_project_rewrite_emits_no_stderr(capsys):
+    """Rewriting a project path must not produce spurious 'unexpected path' warnings."""
+    normalize_string(
+        "edited /home/hars/projects/opet/src/val.py",
+        home="/home/hars",
+        project_dir="/home/hars/projects/opet",
+        project_name="opet",
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_home_rewrite_emits_no_stderr(capsys):
+    normalize_string(
+        "checked /home/hars/notes.md",
+        home="/home/hars",
+        project_dir="/home/hars/projects/opet",
+        project_name="opet",
+    )
+    assert capsys.readouterr().err == ""

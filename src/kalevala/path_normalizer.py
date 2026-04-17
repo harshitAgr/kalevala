@@ -31,10 +31,14 @@ def normalize_string(s: str, *, home: str, project_dir: str, project_name: str) 
     if home_s:
         out = out.replace(home_s, "~/")
 
-    for match in _FOREIGN_ABS.finditer(out):
+    # Scan the ORIGINAL s for foreign paths so already-rewritten substrings
+    # don't produce false-positive warnings. Skip any path that falls inside
+    # project_dir or home (those were rewritten above).
+    for match in _FOREIGN_ABS.finditer(s):
         path = match.group(0)
-        # skip anything we've already rewritten
-        if path.startswith("~/") or path.startswith(f"{project_name}/"):
+        if project_dir and path.startswith(project_dir):
+            continue
+        if home and path.startswith(home):
             continue
         print(f"[kalevala] unexpected absolute path retained: {path}", file=sys.stderr)
     return out
