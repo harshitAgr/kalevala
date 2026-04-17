@@ -50,6 +50,7 @@ def _has_staged_or_unstaged_changes(cfg: Config) -> bool:
 
 
 def _queue_push(cfg: Config, message: str, reason: str, stderr: str = "") -> None:
+    import uuid as _uuid
     path = cfg.pending_file
     path.parent.mkdir(parents=True, exist_ok=True)
     existing: list = []
@@ -60,7 +61,12 @@ def _queue_push(cfg: Config, message: str, reason: str, stderr: str = "") -> Non
                 existing = loaded
         except json.JSONDecodeError:
             existing = []
-    entry = {"kind": "push", "message": message, "reason": reason}
+    entry = {
+        "queue_id": _uuid.uuid4().hex,
+        "kind": "push",
+        "message": message,
+        "reason": reason,
+    }
     if stderr:
         entry["stderr"] = stderr.strip()
     existing.append(entry)

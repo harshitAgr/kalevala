@@ -82,24 +82,26 @@ def test_empty_transcript_first_run_skips_llm(tmp_config: Path, tmp_path: Path):
 
 
 def test_drain_preserves_items_added_during_drain(tmp_config: Path, tmp_path: Path, monkeypatch):
-    """When a pending-entry processor re-queues during drain, drain must not clobber it."""
+    """When a concurrent writer re-queues during drain, drain must preserve the new entry
+    AND must not duplicate the original entry."""
     cfg = load_config()
     cfg.state_dir.mkdir(parents=True, exist_ok=True)
 
-    # seed a due session pending item whose transcript is missing (will fail -> requeue)
+    import uuid as _uuid
     due = _dt.datetime.now().timestamp() - 60
+    seed_qid = _uuid.uuid4().hex
     cfg.pending_file.write_text(json.dumps([
-        {"kind": "session", "session_id": "drainA", "transcript_path": str(tmp_path / "nope.jsonl"),
+        {"queue_id": seed_qid, "kind": "session", "session_id": "drainA",
+         "transcript_path": str(tmp_path / "nope.jsonl"),
          "next_retry_at": due, "attempts": 0, "reason": "seed"}
     ]))
 
-    # simulate: while draining, another writer appends a new entry
     from kalevala import pipeline as _pl
     original_process = _pl._process_session
     def _injecting_process(*args, **kwargs):
-        # append a new pending entry as if another writer did so
         current = _pl._read_pending(cfg)
-        current.append({"kind": "push", "message": "injected-during-drain",
+        current.append({"queue_id": _uuid.uuid4().hex, "kind": "push",
+                        "message": "injected-during-drain",
                         "next_retry_at": 0, "attempts": 0})
         _pl._write_pending(cfg, current)
         return original_process(*args, **kwargs)
@@ -109,5 +111,8 @@ def test_drain_preserves_items_added_during_drain(tmp_config: Path, tmp_path: Pa
     _pl._drain_pending(cfg, client, today="2026-04-17")
 
     pending = json.loads(cfg.pending_file.read_text())
-    # The injected entry must survive
+    # injected entry is preserved
     assert any(e.get("message") == "injected-during-drain" for e in pending), pending
+    # seed appears EXACTLY ONCE (failure path mutates it in-place, re-read must not duplicate)
+    seed_entries = [e for e in pending if e.get("queue_id") == seed_qid]
+    assert len(seed_entries) == 1, seed_entries

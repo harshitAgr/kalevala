@@ -96,8 +96,13 @@ def _write_pending(cfg: Config, items: list) -> None:
 
 def _queue_pending(cfg: Config, entry: dict, attempts: int = 0) -> None:
     try:
-        augmented = {**entry, "attempts": attempts,
-                     "next_retry_at": _dt.datetime.now().timestamp() + next_retry_delay_seconds(attempts)}
+        import uuid as _uuid
+        augmented = {
+            "queue_id": entry.get("queue_id") or _uuid.uuid4().hex,
+            **entry,
+            "attempts": attempts,
+            "next_retry_at": _dt.datetime.now().timestamp() + next_retry_delay_seconds(attempts),
+        }
         existing = _read_pending(cfg)
         existing.append(augmented)
         _write_pending(cfg, existing)
@@ -110,7 +115,7 @@ def _drain_pending(cfg: Config, client: Any, today: str) -> None:
     items = _read_pending(cfg)
     if not items:
         return
-    original_ids = {id(it) for it in items}
+    original_qids = {it.get("queue_id") for it in items if it.get("queue_id")}
     now = _dt.datetime.now().timestamp()
     remaining = []
     for it in items:
@@ -139,12 +144,16 @@ def _drain_pending(cfg: Config, client: Any, today: str) -> None:
                 it["next_retry_at"] = now + next_retry_delay_seconds(it["attempts"])
                 remaining.append(it)
 
-    # Re-read pending.json to pick up anything written concurrently
-    # (e.g. _queue_push called inside commit_and_push during this drain).
+    # Re-read to pick up entries written concurrently (e.g. _queue_push from
+    # inside commit_and_push during this drain). Skip any entry whose
+    # queue_id matches an original — those were already handled (success =>
+    # drop, failure => already in `remaining`).
     current = _read_pending(cfg)
     for it in current:
-        if id(it) not in original_ids:
-            remaining.append(it)
+        qid = it.get("queue_id")
+        if qid and qid in original_qids:
+            continue
+        remaining.append(it)
     _write_pending(cfg, remaining)
 
 
