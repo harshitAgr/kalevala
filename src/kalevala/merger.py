@@ -190,3 +190,32 @@ def merge_session(
     rendered = _render_full(date, new_sessions, notes, opens)
     _atomic_write(path, rendered)
     return path
+
+
+def _add_note_generic(cfg: Config, date: str, prefix: str, text: str) -> Path:
+    path = _daily_path(cfg, date)
+    existing = _parse_existing(path)
+    new_notes = list(existing["notes"])
+    new_note = f"{prefix}{text}"
+    if new_note not in new_notes:
+        new_notes.append(new_note)
+    # render: if no prior content, synthesize a minimal entry
+    if not existing["sessions"]:
+        rendered = (
+            f"---\ndate: {date}\nsessions: 0\nprojects: []\n---\n\n"
+            f"# {date} — {_weekday(date)}\n\n"
+            f"## Summary\n_(no sessions yet)_\n\n"
+            f"## Notes for Later\n" + "\n".join(f"- {n}" for n in new_notes) + "\n"
+        )
+    else:
+        rendered = _render_full(date, existing["sessions"], new_notes, existing["open_threads"])
+    _atomic_write(path, rendered)
+    return path
+
+
+def add_manual_note(cfg: Config, date: str, text: str) -> Path:
+    return _add_note_generic(cfg, date, "(manual) ", text)
+
+
+def add_manual_todo(cfg: Config, date: str, text: str) -> Path:
+    return _add_note_generic(cfg, date, "(manual) TODO: ", text)

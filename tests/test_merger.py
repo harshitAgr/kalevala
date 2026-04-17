@@ -81,3 +81,47 @@ def test_frontmatter_populated(tmp_config: Path):
     assert "date: 2026-04-17" in head
     assert "sessions: 2" in head
     assert "opet" in head and "AortaAIM" in head
+
+
+from kalevala.merger import add_manual_note, add_manual_todo  # noqa: E402
+
+
+def test_same_day_resume_replaces_block(tmp_config: Path):
+    cfg = load_config()
+    first = _summary(summary="first pass", time_range=["09:00", "10:00"])
+    merge_session(cfg, "2026-04-17", "same", first)
+    second = _summary(summary="second pass with guards", time_range=["11:00", "12:00"])
+    merge_session(cfg, "2026-04-17", "same", second)
+
+    body = (cfg.entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
+    assert body.count("### Session 1 — opet") == 1  # still one block
+    assert "second pass with guards" in body
+    assert "first pass" not in body  # replaced, not appended
+
+
+def test_cross_day_resume_has_continued_from_tag(tmp_config: Path):
+    cfg = load_config()
+    # day 1
+    merge_session(cfg, "2026-04-17", "xday", _summary(summary="day 1 work"))
+    # day 2 — continued_from passed by caller
+    merge_session(cfg, "2026-04-18", "xday", _summary(summary="day 2 work"),
+                  continued_from="2026-04-17")
+    day1 = (cfg.entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
+    day2 = (cfg.entries_dir / "2026" / "04" / "2026-04-18.md").read_text()
+    assert "day 1 work" in day1
+    assert "day 1 work" not in day2
+    assert "continued from 2026-04-17" in day2
+
+
+def test_manual_note_added(tmp_config: Path):
+    cfg = load_config()
+    add_manual_note(cfg, "2026-04-17", "try SegResNet-DS 16 filters")
+    body = (cfg.entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
+    assert "## Notes for Later" in body
+    assert "- (manual) try SegResNet-DS 16 filters" in body
+
+
+def test_manual_todo_added(tmp_config: Path):
+    add_manual_todo(load_config(), "2026-04-17", "fix the val heatmap")
+    body = (load_config().entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
+    assert "- (manual) TODO: fix the val heatmap" in body
