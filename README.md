@@ -31,6 +31,8 @@ The script is idempotent — safe to re-run to update.
 
 ```bash
 pip install -e ~/projects/kalevala
+# Make `kalevala` available on PATH for the /kalevala slash command
+ln -sf ~/projects/kalevala/.venv/bin/kalevala ~/.local/bin/kalevala
 ```
 
 Create `~/.config/kalevala/config.toml`:

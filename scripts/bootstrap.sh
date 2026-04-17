@@ -46,13 +46,20 @@ else
     git -C "$LOG_DIR" pull --ff-only
 fi
 
-# 2. Install tool in venv
+# 2. Install tool in venv + symlink to ~/.local/bin so `kalevala` is on PATH
 if [[ ! -x "$TOOL_DIR/.venv/bin/kalevala" ]]; then
     echo "[2/5] creating venv and installing kalevala..."
     python3 -m venv "$TOOL_DIR/.venv"
     "$TOOL_DIR/.venv/bin/pip" install -q -e "$TOOL_DIR"
 else
     echo "[2/5] kalevala already installed in venv"
+fi
+
+mkdir -p "$HOME/.local/bin"
+ln -sf "$TOOL_DIR/.venv/bin/kalevala" "$HOME/.local/bin/kalevala"
+if ! command -v kalevala >/dev/null 2>&1; then
+    echo "    warning: ~/.local/bin is not on your PATH — the /kalevala slash command will fail."
+    echo "    add 'export PATH=\$HOME/.local/bin:\$PATH' to your shell profile."
 fi
 
 # 3. Config
