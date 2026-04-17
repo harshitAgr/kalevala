@@ -9,8 +9,7 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
-from anthropic import Anthropic
-
+from .clients import build_client
 from .config import Config, load_config
 from .git_sync import commit_and_push
 from .merger import add_manual_note, add_manual_todo
@@ -21,8 +20,8 @@ def _today() -> str:
     return _dt.date.today().isoformat()
 
 
-def _client() -> Anthropic:
-    return Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+def _client():
+    return build_client()
 
 
 def _resolve_hook_inputs(args: argparse.Namespace) -> tuple[str, str]:

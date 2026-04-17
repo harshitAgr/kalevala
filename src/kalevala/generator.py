@@ -76,6 +76,29 @@ def _load_transcript_slice(path: Path, start_msg_idx: int) -> tuple[list[dict[st
     return slice_, last_uuid, last_idx
 
 
+def _extract_json(text: str) -> str:
+    """Strip surrounding prose / markdown fences so json.loads can parse.
+
+    Models often wrap JSON in ```json ... ``` fences. Fall back to the
+    substring between the first `{` and matching `}` if no fence is present.
+    """
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else t[3:]
+        if t.endswith("```"):
+            t = t[:-3]
+        # drop an optional `json` tag on the first line
+        if t.startswith("json\n") or t.startswith("JSON\n"):
+            t = t[5:]
+    t = t.strip()
+    if not t.startswith("{"):
+        start = t.find("{")
+        end = t.rfind("}")
+        if start != -1 and end != -1:
+            t = t[start : end + 1]
+    return t
+
+
 def summarize_session(
     transcript_path: Path,
     start_msg_idx: int,
@@ -92,7 +115,7 @@ def summarize_session(
         messages=[{"role": "user", "content": prompt}],
     )
     text = response.content[0].text
-    data = json.loads(text)
+    data = json.loads(_extract_json(text))
     summary = SessionSummary(**data)
     # attach cursor info for the pipeline to persist
     return summary.model_copy(update={"last_msg_uuid": last_uuid, "last_msg_idx": last_idx})
