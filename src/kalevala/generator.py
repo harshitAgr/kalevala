@@ -61,18 +61,89 @@ Return JSON with this shape (all fields required; use empty lists if none):
 """
 
 
+def _flatten_content(content: Any) -> str:
+    """Flatten Claude Code's block-list content into plain text.
+
+    Transcripts use content = str | list[{type, text/name/input/...}].
+    We keep text blocks verbatim and summarize tool_use / tool_result.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            parts.append(block.get("text", ""))
+        elif btype == "tool_use":
+            name = block.get("name", "tool")
+            inp = block.get("input", {})
+            # short input preview (paths/cmds are useful; blobs get truncated)
+            preview = json.dumps(inp, default=str)[:300]
+            parts.append(f"[tool:{name} {preview}]")
+        elif btype == "tool_result":
+            tc = block.get("content", "")
+            if isinstance(tc, list):
+                tc = "".join(b.get("text", "") for b in tc if isinstance(b, dict) and b.get("type") == "text")
+            parts.append(f"[tool-result: {str(tc)[:300]}]")
+        elif btype == "thinking":
+            continue  # skip thinking blocks from journal
+    return "\n".join(p for p in parts if p)
+
+
+def _extract_turn(obj: dict) -> tuple[str, str] | None:
+    """Pull (role, text) from a transcript line. Accepts two shapes:
+
+    1. Claude Code envelope: {type, message: {role, content}, ...}
+    2. Flat message: {role, content, ...} (used by test fixtures and callers
+       that already pre-extracted the turn)
+    """
+    # envelope form
+    if obj.get("type") in ("user", "assistant") and isinstance(obj.get("message"), dict):
+        msg = obj["message"]
+        role = msg.get("role") or obj.get("type") or "?"
+        text = _flatten_content(msg.get("content"))
+        if not text.strip():
+            return None
+        return role, text
+    # flat form
+    if "role" in obj or "content" in obj:
+        role = obj.get("role", "?")
+        text = _flatten_content(obj.get("content", ""))
+        if not text.strip():
+            return None
+        return role, text
+    return None
+
+
 def _load_transcript_slice(path: Path, start_msg_idx: int) -> tuple[list[dict[str, Any]], str, int]:
-    """Return (messages_slice, last_uuid, last_idx_inclusive)."""
-    messages: list[dict[str, Any]] = []
+    """Return (turns_slice, last_uuid, last_idx_inclusive).
+
+    Each turn is {'role': ..., 'content': ..., 'uuid': ...}. The returned
+    `last_idx` counts every non-empty turn (so cursor semantics are
+    consistent regardless of transcript envelope lines).
+    """
+    turns: list[dict[str, Any]] = []
     with path.open() as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            messages.append(json.loads(line))
-    slice_ = messages[start_msg_idx:]
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            extracted = _extract_turn(obj)
+            if extracted is None:
+                continue
+            role, text = extracted
+            turns.append({"role": role, "content": text, "uuid": obj.get("uuid", "")})
+    slice_ = turns[start_msg_idx:]
     last_uuid = slice_[-1].get("uuid", "") if slice_ else ""
-    last_idx = len(messages) - 1
+    last_idx = len(turns) - 1
     return slice_, last_uuid, last_idx
 
 
