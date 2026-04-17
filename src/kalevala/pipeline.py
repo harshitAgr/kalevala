@@ -49,49 +49,68 @@ def next_retry_delay_seconds(attempt: int) -> float:
 
 
 def _log_error(cfg: Config, msg: str) -> None:
-    cfg.state_dir.mkdir(parents=True, exist_ok=True)
-    with cfg.errors_log.open("a") as f:
-        f.write(f"[{_dt.datetime.now().isoformat()}] {msg}\n")
+    try:
+        cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        with cfg.errors_log.open("a") as f:
+            f.write(f"[{_dt.datetime.now().isoformat()}] {msg}\n")
+    except Exception:
+        # logging must never itself be a failure mode
+        pass
 
 
 def _write_status(cfg: Config, **kv) -> None:
-    cfg.state_dir.mkdir(parents=True, exist_ok=True)
-    current: dict[str, Any] = {}
-    if cfg.status_file.exists():
-        try:
-            current = json.loads(cfg.status_file.read_text())
-        except json.JSONDecodeError:
-            pass
-    current.update(kv)
-    current["updated_at"] = _dt.datetime.now().isoformat()
-    cfg.status_file.write_text(json.dumps(current, indent=2))
+    try:
+        cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        current: dict[str, Any] = {}
+        if cfg.status_file.exists():
+            try:
+                current = json.loads(cfg.status_file.read_text())
+            except json.JSONDecodeError:
+                pass
+        current.update(kv)
+        current["updated_at"] = _dt.datetime.now().isoformat()
+        cfg.status_file.write_text(json.dumps(current, indent=2))
+    except Exception:
+        pass
+
+
+def _read_pending(cfg: Config) -> list:
+    if not cfg.pending_file.exists():
+        return []
+    try:
+        loaded = json.loads(cfg.pending_file.read_text())
+        if isinstance(loaded, list):
+            return loaded
+    except json.JSONDecodeError:
+        pass
+    return []
+
+
+def _write_pending(cfg: Config, items: list) -> None:
+    try:
+        cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        cfg.pending_file.write_text(json.dumps(items, indent=2))
+    except Exception:
+        pass
 
 
 def _queue_pending(cfg: Config, entry: dict, attempts: int = 0) -> None:
-    entry = {**entry, "attempts": attempts,
-             "next_retry_at": _dt.datetime.now().timestamp() + next_retry_delay_seconds(attempts)}
-    cfg.state_dir.mkdir(parents=True, exist_ok=True)
-    existing: list = []
-    if cfg.pending_file.exists():
-        try:
-            loaded = json.loads(cfg.pending_file.read_text())
-            if isinstance(loaded, list):
-                existing = loaded
-        except json.JSONDecodeError:
-            existing = []
-    existing.append(entry)
-    cfg.pending_file.write_text(json.dumps(existing, indent=2))
+    try:
+        augmented = {**entry, "attempts": attempts,
+                     "next_retry_at": _dt.datetime.now().timestamp() + next_retry_delay_seconds(attempts)}
+        existing = _read_pending(cfg)
+        existing.append(augmented)
+        _write_pending(cfg, existing)
+    except Exception:
+        # queueing must never be a failure mode that escapes
+        pass
 
 
 def _drain_pending(cfg: Config, client: Any, today: str) -> None:
-    if not cfg.pending_file.exists():
+    items = _read_pending(cfg)
+    if not items:
         return
-    try:
-        items = json.loads(cfg.pending_file.read_text())
-        if not isinstance(items, list):
-            return
-    except json.JSONDecodeError:
-        return
+    original_ids = {id(it) for it in items}
     now = _dt.datetime.now().timestamp()
     remaining = []
     for it in items:
@@ -116,12 +135,45 @@ def _drain_pending(cfg: Config, client: Any, today: str) -> None:
                 commit_and_push(cfg, it.get("message", "kalevala: drain"))
             except Exception as e:
                 _log_error(cfg, f"drain push failure: {e}")
+                it["attempts"] = it.get("attempts", 0) + 1
+                it["next_retry_at"] = now + next_retry_delay_seconds(it["attempts"])
                 remaining.append(it)
-    cfg.pending_file.write_text(json.dumps(remaining, indent=2))
+
+    # Re-read pending.json to pick up anything written concurrently
+    # (e.g. _queue_push called inside commit_and_push during this drain).
+    current = _read_pending(cfg)
+    for it in current:
+        if id(it) not in original_ids:
+            remaining.append(it)
+    _write_pending(cfg, remaining)
 
 
 def _project_name(cfg: Config) -> str:
     return os.environ.get("CLAUDE_PROJECT_DIR", "").rstrip("/").rsplit("/", 1)[-1] or "unknown"
+
+
+def _scrub_summary_fields(summary_dict: dict) -> tuple[dict, int]:
+    scrubber = Scrubber()
+    total = 0
+    out: dict[str, Any] = {}
+    for k, v in summary_dict.items():
+        if isinstance(v, str):
+            cleaned, counts = scrubber.scrub(v)
+            total += sum(counts.values())
+            out[k] = cleaned
+        elif isinstance(v, list):
+            new_list = []
+            for item in v:
+                if isinstance(item, str):
+                    cleaned, counts = scrubber.scrub(item)
+                    total += sum(counts.values())
+                    new_list.append(cleaned)
+                else:
+                    new_list.append(item)
+            out[k] = new_list
+        else:
+            out[k] = v
+    return out, total
 
 
 def _process_session(
@@ -133,6 +185,7 @@ def _process_session(
     transcript_path: Path,
 ) -> bool:
     if not transcript_path.exists():
+        _log_error(cfg, f"transcript missing: {transcript_path}")
         raise FileNotFoundError(f"transcript missing: {transcript_path}")
 
     state = State(cfg)
@@ -140,37 +193,26 @@ def _process_session(
     start_idx = cursor.last_processed_msg_idx + 1 if cursor else 0
     first_seen = cursor.first_seen_date if cursor else today
 
-    # check for new messages
     with transcript_path.open() as f:
         total = sum(1 for line in f if line.strip())
-    if cursor and start_idx >= total:
-        return False  # no new messages
+
+    # no new messages since last cursor OR empty transcript on first run
+    if start_idx >= total:
+        return False
 
     summary = summarize_session(transcript_path, start_idx, cfg, client)
 
-    # normalize paths then scrub
     home = os.environ.get("HOME", str(Path.home()))
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
     summary_dict = summary.model_dump()
-    summary_dict = normalize_paths(summary_dict, home=home,
-                                   project_dir=project_dir,
-                                   project_name=summary.project or _project_name(cfg))
-    scrubber = Scrubber()
-    total_redactions = 0
-    for k, v in summary_dict.items():
-        if isinstance(v, str):
-            summary_dict[k], counts = scrubber.scrub(v)
-            total_redactions += sum(counts.values())
-        elif isinstance(v, list):
-            new_list = []
-            for item in v:
-                if isinstance(item, str):
-                    cleaned, counts = scrubber.scrub(item)
-                    total_redactions += sum(counts.values())
-                    new_list.append(cleaned)
-                else:
-                    new_list.append(item)
-            summary_dict[k] = new_list
+    summary_dict = normalize_paths(
+        summary_dict,
+        home=home,
+        project_dir=project_dir,
+        project_name=summary.project or _project_name(cfg),
+    )
+
+    summary_dict, total_redactions = _scrub_summary_fields(summary_dict)
 
     if total_redactions >= cfg.scrub_threshold:
         msg = f"[SCRUB_THRESHOLD_EXCEEDED] session={session_id} redactions={total_redactions}"
@@ -227,13 +269,21 @@ def run_hook(
             )
             return HookResult(processed=processed)
     except LockTimeout:
-        _queue_pending(cfg, {
-            "kind": "session",
-            "session_id": session_id,
-            "transcript_path": str(transcript_path),
-            "reason": "lock_timeout",
-        })
+        try:
+            _queue_pending(cfg, {
+                "kind": "session",
+                "session_id": session_id,
+                "transcript_path": str(transcript_path),
+                "reason": "lock_timeout",
+            })
+        except Exception:
+            pass
         return HookResult(processed=False, error="lock_timeout")
     except Exception as e:
-        _log_error(cfg, f"hook failure {session_id}: {e}\n{traceback.format_exc()}")
+        try:
+            _log_error(cfg, f"hook failure {session_id}: {e}\n{traceback.format_exc()}")
+        except Exception:
+            pass
         return HookResult(processed=False, error=str(e))
+    except BaseException as e:  # fatal fallback — KeyboardInterrupt, SystemExit, etc.
+        return HookResult(processed=False, error=f"fatal: {type(e).__name__}")
