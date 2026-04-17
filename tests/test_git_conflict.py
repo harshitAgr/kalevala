@@ -43,3 +43,53 @@ def test_push_failure_queues(tmp_config: Path, tmp_log_repo: Path, tmp_path: Pat
     assert result.committed is True
     # auto-merge from no-overlap should succeed; this test just verifies path works
     assert result.pushed in (True, False)
+
+
+import json
+
+
+def test_true_conflict_queues_with_git_conflict_reason(tmp_config: Path, tmp_log_repo: Path, tmp_path: Path):
+    # flip auto_push on BEFORE loading config
+    config_path = Path(tmp_path / ".config" / "kalevala" / "config.toml")
+    config_path.write_text(config_path.read_text().replace("auto_push = false", "auto_push = true"))
+    cfg = load_config()
+
+    # bare remote
+    bare = tmp_path / "bare2.git"
+    _run(["git", "init", "-q", "--bare", str(bare)], cwd=tmp_path)
+    _run(["git", "remote", "add", "origin", str(bare)], cwd=tmp_log_repo)
+
+    # seed both sides with an identical file
+    shared = tmp_log_repo / "shared.md"
+    shared.write_text("line A\nline B\nline C\n")
+    _run(["git", "add", "shared.md"], cwd=tmp_log_repo)
+    _run(["git", "commit", "-m", "seed shared"], cwd=tmp_log_repo)
+    _run(["git", "push", "-u", "origin", "main"], cwd=tmp_log_repo)
+
+    # remote modifies line B in its own clone and pushes
+    work = tmp_path / "work-conflict"
+    _run(["git", "clone", "-q", str(bare), str(work)], cwd=tmp_path)
+    _run(["git", "config", "user.email", "x@y"], cwd=work)
+    _run(["git", "config", "user.name", "x"], cwd=work)
+    # ensure we are on main (clone of empty-ish bare may default to master)
+    _run(["git", "checkout", "main"], cwd=work)
+    (work / "shared.md").write_text("line A\nline B REMOTE\nline C\n")
+    _run(["git", "add", "shared.md"], cwd=work)
+    _run(["git", "commit", "-m", "remote changes B"], cwd=work)
+    _run(["git", "push", "origin", "main"], cwd=work)
+
+    # local modifies the SAME line differently → guaranteed conflict on merge
+    shared.write_text("line A\nline B LOCAL\nline C\n")
+    result = commit_and_push(cfg, message="local changes B")
+
+    assert result.committed is True
+    assert result.pushed is False
+    assert "conflict" in result.message.lower()
+
+    # pending.json should contain the conflict entry
+    pending = json.loads(cfg.pending_file.read_text())
+    assert any(e.get("reason") == "git_conflict" for e in pending)
+
+    # errors.log should have recorded the merge failure
+    assert cfg.errors_log.exists()
+    assert "merge" in cfg.errors_log.read_text()
