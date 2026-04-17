@@ -25,18 +25,41 @@ def _client() -> Anthropic:
     return Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 
+def _resolve_hook_inputs(args: argparse.Namespace) -> tuple[str, str]:
+    """Return (session_id, transcript_path).
+
+    Claude Code's SessionEnd hook delivers its payload as JSON on stdin,
+    not via environment variables. If CLI args are missing, parse stdin.
+    """
+    import json as _json
+    sid = args.session_id
+    tpath = args.transcript_path
+    if (not sid or not tpath) and not sys.stdin.isatty():
+        try:
+            payload = _json.loads(sys.stdin.read() or "{}")
+            sid = sid or payload.get("session_id", "")
+            tpath = tpath or payload.get("transcript_path", "")
+        except _json.JSONDecodeError:
+            pass
+    return sid or "", tpath or ""
+
+
 def cmd_hook(args: argparse.Namespace, cfg: Config) -> int:
+    session_id, transcript_path = _resolve_hook_inputs(args)
     if args.verify_scrub:
         from .scrubber import Scrubber
         scrubber = Scrubber()
-        text = Path(args.transcript_path).read_text()
+        text = Path(transcript_path).read_text()
         _, counts = scrubber.scrub(text)
         print(f"scrub report: {counts}")
         return 0
+    if not session_id or not transcript_path:
+        print("[kalevala] missing session_id or transcript_path (pass via flags or stdin JSON)", file=sys.stderr)
+        return 0  # still never nonzero
     client = _client()
     result = run_hook(
-        session_id=args.session_id,
-        transcript_path=Path(args.transcript_path),
+        session_id=session_id,
+        transcript_path=Path(transcript_path),
         cfg=cfg,
         client=client,
     )
@@ -149,8 +172,8 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_hook = sub.add_parser("hook")
-    p_hook.add_argument("--session-id", required=True)
-    p_hook.add_argument("--transcript-path", required=True)
+    p_hook.add_argument("--session-id", default=None)
+    p_hook.add_argument("--transcript-path", default=None)
     p_hook.add_argument("--verify-scrub", action="store_true")
     p_hook.add_argument("--dry-run", action="store_true")
 
