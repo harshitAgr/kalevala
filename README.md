@@ -16,6 +16,19 @@ This tool shells out to the `claude` CLI with `--no-session-persistence`, so it 
 
 ## Install
 
+### Quick bootstrap (new machine, same user)
+
+Clones both repos, creates the venv, writes config, installs the skill, and merges the SessionEnd hook in one shot:
+
+```bash
+git clone git@github.com:<your-user>/kalevala.git ~/projects/kalevala
+~/projects/kalevala/scripts/bootstrap.sh <your-user>
+```
+
+The script is idempotent — safe to re-run to update.
+
+### Manual install
+
 ```bash
 pip install -e ~/projects/kalevala
 ```
