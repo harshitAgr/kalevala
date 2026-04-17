@@ -29,7 +29,7 @@ def test_first_run_creates_daily_entry(tmp_config: Path, tmp_log_repo: Path, tmp
     client = _mock_client({
         "summary": "did work", "files_touched": [], "commits": [], "bugs_fixed": [],
         "decisions": [], "learnings": [], "notes_for_later": [], "open_threads": [],
-        "time_range": ["10:00", "10:30"], "project": "opet",
+        "time_range": ["10:00", "10:30"], "project": "myapp",
     })
 
     result = run_hook(
@@ -51,7 +51,7 @@ def test_second_run_same_session_is_idempotent(tmp_config: Path, tmp_path: Path)
     client = _mock_client({
         "summary": "x", "files_touched": [], "commits": [], "bugs_fixed": [],
         "decisions": [], "learnings": [], "notes_for_later": [], "open_threads": [],
-        "time_range": ["10:00", "10:30"], "project": "opet",
+        "time_range": ["10:00", "10:30"], "project": "myapp",
     })
     r1 = run_hook("abc", transcript, cfg, client, today="2026-04-17")
     r2 = run_hook("abc", transcript, cfg, client, today="2026-04-17")

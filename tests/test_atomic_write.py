@@ -10,7 +10,7 @@ def _min_summary() -> SessionSummary:
     return SessionSummary(
         summary="x", files_touched=[], commits=[], bugs_fixed=[],
         decisions=[], learnings=[], notes_for_later=[], open_threads=[],
-        time_range=["00:00", "00:01"], project="opet",
+        time_range=["00:00", "00:01"], project="myapp",
         last_msg_uuid="u", last_msg_idx=0,
     )
 

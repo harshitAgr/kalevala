@@ -19,7 +19,7 @@ def test_set_and_get_cursor(tmp_config: Path):
         last_msg_uuid="msg_5",
         last_update_date="2026-04-17",
         first_seen_date="2026-04-17",
-        project="opet",
+        project="myapp",
     )
     state.set("abc123", cursor)
     state.save()

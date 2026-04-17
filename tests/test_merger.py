@@ -8,16 +8,16 @@ from kalevala.merger import merge_session
 
 def _summary(**overrides) -> SessionSummary:
     base = dict(
-        summary="fixed val loop",
-        files_touched=["opet/src/val.py"],
-        commits=["a1b2c3d fix: skip empty batches"],
-        bugs_fixed=["empty batch -> NaN"],
-        decisions=["deferred heatmap refactor"],
-        learnings=["DiceMetric returns NaN on empty preds"],
-        notes_for_later=["revisit val-heatmap"],
-        open_threads=["fingerprint cache mismatch"],
+        summary="fixed request handler",
+        files_touched=["myapp/src/handlers.py"],
+        commits=["a1b2c3d fix: handle nil request body"],
+        bugs_fixed=["nil body -> 500"],
+        decisions=["deferred auth cache refactor"],
+        learnings=["JSON decoder returns None on empty body"],
+        notes_for_later=["revisit auth-cache"],
+        open_threads=["session token mismatch"],
         time_range=["14:22", "15:40"],
-        project="opet",
+        project="myapp",
         last_msg_uuid="msg_10",
         last_msg_idx=10,
     )
@@ -32,21 +32,21 @@ def test_merge_creates_daily_file(tmp_config: Path):
     assert target.exists()
     body = target.read_text()
     assert "# 2026-04-17" in body
-    assert "### Session 1 — opet" in body
+    assert "### Session 1 — myapp" in body
     assert "id: abc123" in body
-    assert "fixed val loop" in body
+    assert "fixed request handler" in body
     assert "## Notes for Later" in body
-    assert "- (auto) revisit val-heatmap" in body
+    assert "- (auto) revisit auth-cache" in body
     assert "## Open Threads" in body
 
 
 def test_merge_appends_second_session(tmp_config: Path):
     cfg = load_config()
-    merge_session(cfg, "2026-04-17", "abc123", _summary(project="opet", summary="first"))
-    merge_session(cfg, "2026-04-17", "def456", _summary(project="AortaAIM", summary="second"))
+    merge_session(cfg, "2026-04-17", "abc123", _summary(project="myapp", summary="first"))
+    merge_session(cfg, "2026-04-17", "def456", _summary(project="webapp", summary="second"))
     body = (cfg.entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
-    assert "### Session 1 — opet" in body
-    assert "### Session 2 — AortaAIM" in body
+    assert "### Session 1 — myapp" in body
+    assert "### Session 2 — webapp" in body
     assert "first" in body
     assert "second" in body
 
@@ -54,7 +54,7 @@ def test_merge_appends_second_session(tmp_config: Path):
 def test_top_summary_is_deterministic_concat(tmp_config: Path):
     cfg = load_config()
     merge_session(cfg, "2026-04-17", "a", _summary(summary="alpha work"))
-    merge_session(cfg, "2026-04-17", "b", _summary(summary="beta work", project="AortaAIM"))
+    merge_session(cfg, "2026-04-17", "b", _summary(summary="beta work", project="webapp"))
     body = (cfg.entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
     # "## Summary" section comes before sessions and lists both lines
     summary_section = body.split("## Sessions")[0]
@@ -74,13 +74,13 @@ def test_notes_deduped_across_sessions(tmp_config: Path):
 
 def test_frontmatter_populated(tmp_config: Path):
     cfg = load_config()
-    merge_session(cfg, "2026-04-17", "a", _summary(project="opet"))
-    merge_session(cfg, "2026-04-17", "b", _summary(project="AortaAIM"))
+    merge_session(cfg, "2026-04-17", "a", _summary(project="myapp"))
+    merge_session(cfg, "2026-04-17", "b", _summary(project="webapp"))
     body = (cfg.entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
     head = body.split("---", 2)[1]
     assert "date: 2026-04-17" in head
     assert "sessions: 2" in head
-    assert "opet" in head and "AortaAIM" in head
+    assert "myapp" in head and "webapp" in head
 
 
 from kalevala.merger import add_manual_note, add_manual_todo  # noqa: E402
@@ -94,7 +94,7 @@ def test_same_day_resume_replaces_block(tmp_config: Path):
     merge_session(cfg, "2026-04-17", "same", second)
 
     body = (cfg.entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
-    assert body.count("### Session 1 — opet") == 1  # still one block
+    assert body.count("### Session 1 — myapp") == 1  # still one block
     assert "second pass with guards" in body
     assert "first pass" not in body  # replaced, not appended
 
@@ -115,13 +115,13 @@ def test_cross_day_resume_has_continued_from_tag(tmp_config: Path):
 
 def test_manual_note_added(tmp_config: Path):
     cfg = load_config()
-    add_manual_note(cfg, "2026-04-17", "try SegResNet-DS 16 filters")
+    add_manual_note(cfg, "2026-04-17", "try new cache layout")
     body = (cfg.entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
     assert "## Notes for Later" in body
-    assert "- (manual) try SegResNet-DS 16 filters" in body
+    assert "- (manual) try new cache layout" in body
 
 
 def test_manual_todo_added(tmp_config: Path):
-    add_manual_todo(load_config(), "2026-04-17", "fix the val heatmap")
+    add_manual_todo(load_config(), "2026-04-17", "refactor the auth middleware")
     body = (load_config().entries_dir / "2026" / "04" / "2026-04-17.md").read_text()
-    assert "- (manual) TODO: fix the val heatmap" in body
+    assert "- (manual) TODO: refactor the auth middleware" in body

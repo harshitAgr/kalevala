@@ -67,8 +67,8 @@ cp ~/projects/kalevala/skills/kalevala/SKILL.md ~/.claude/skills/kalevala/SKILL.
 ## Usage
 
 ```
-kalevala note "try SegResNet-DS 16 filters"
-kalevala todo "fix the val heatmap next week"
+kalevala note "try the new cache layout"
+kalevala todo "refactor the auth middleware next week"
 kalevala show              # today's entry
 kalevala show 2026-04-17   # a specific date
 kalevala last              # yesterday's entry
@@ -83,7 +83,7 @@ Or from inside Claude Code:
 ```
 /kalevala note "..."
 /kalevala search val-loop
-/kalevala resume "val heatmap"
+/kalevala resume "auth middleware"
 ```
 
 ## Safety & design highlights

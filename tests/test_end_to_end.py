@@ -15,10 +15,10 @@ def _transcript(path: Path, messages: list[str]) -> Path:
 def test_end_to_end_new_and_resume(tmp_config, tmp_log_repo, tmp_path):
     def _mk_payload(summary_text: str):
         return {
-            "summary": summary_text, "files_touched": ["opet/src/a.py"],
+            "summary": summary_text, "files_touched": ["myapp/src/a.py"],
             "commits": [], "bugs_fixed": [], "decisions": [],
             "learnings": [], "notes_for_later": [], "open_threads": [],
-            "time_range": ["10:00", "10:30"], "project": "opet",
+            "time_range": ["10:00", "10:30"], "project": "myapp",
         }
     client = MagicMock()
     response = MagicMock()
@@ -61,7 +61,7 @@ def test_end_to_end_scrub_threshold_trips(tmp_config, tmp_log_repo, tmp_path, ca
         "summary": " ".join(fake_secrets), "files_touched": [],
         "commits": [], "bugs_fixed": [], "decisions": [],
         "learnings": [], "notes_for_later": [], "open_threads": [],
-        "time_range": ["10:00", "10:30"], "project": "opet",
+        "time_range": ["10:00", "10:30"], "project": "myapp",
     }
     client = MagicMock()
     response = MagicMock()

@@ -18,16 +18,16 @@ def _mock_anthropic_client(summary_payload: dict) -> MagicMock:
 def test_summarize_returns_pydantic_model(tmp_config: Path, sample_transcript: Path):
     cfg = load_config()
     payload = {
-        "summary": "fixed val loop",
-        "files_touched": ["opet/src/val.py"],
-        "commits": ["a1b2c3d fix val"],
-        "bugs_fixed": ["empty batch → NaN"],
+        "summary": "fixed request handler",
+        "files_touched": ["myapp/src/handlers.py"],
+        "commits": ["a1b2c3d fix request handler"],
+        "bugs_fixed": ["nil body -> 500"],
         "decisions": [],
         "learnings": [],
         "notes_for_later": [],
         "open_threads": [],
         "time_range": ["14:22", "15:40"],
-        "project": "opet",
+        "project": "myapp",
     }
     client = _mock_anthropic_client(payload)
     summary = summarize_session(
@@ -37,8 +37,8 @@ def test_summarize_returns_pydantic_model(tmp_config: Path, sample_transcript: P
         client=client,
     )
     assert isinstance(summary, SessionSummary)
-    assert summary.summary == "fixed val loop"
-    assert summary.project == "opet"
+    assert summary.summary == "fixed request handler"
+    assert summary.project == "myapp"
 
 
 def test_prompt_includes_transcript_delimiter(tmp_config: Path, sample_transcript: Path):
@@ -46,7 +46,7 @@ def test_prompt_includes_transcript_delimiter(tmp_config: Path, sample_transcrip
     payload = {
         "summary": "x", "files_touched": [], "commits": [], "bugs_fixed": [],
         "decisions": [], "learnings": [], "notes_for_later": [], "open_threads": [],
-        "time_range": ["00:00", "00:01"], "project": "opet",
+        "time_range": ["00:00", "00:01"], "project": "myapp",
     }
     client = _mock_anthropic_client(payload)
     summarize_session(sample_transcript, 0, cfg, client)
@@ -64,11 +64,11 @@ def test_summarize_slices_by_start_idx(tmp_config: Path, sample_transcript: Path
     payload = {
         "summary": "x", "files_touched": [], "commits": [], "bugs_fixed": [],
         "decisions": [], "learnings": [], "notes_for_later": [], "open_threads": [],
-        "time_range": ["00:00", "00:01"], "project": "opet",
+        "time_range": ["00:00", "00:01"], "project": "myapp",
     }
     client = _mock_anthropic_client(payload)
     summarize_session(sample_transcript, start_msg_idx=2, cfg=cfg, client=client)
 
     prompt_text = json.dumps(client.messages.create.call_args.kwargs["messages"])
-    assert "fix the val loop crash" not in prompt_text   # msg 1 skipped
-    assert "empty-batch guard" in prompt_text             # msg 3 included
+    assert "fix the request handler crash" not in prompt_text   # msg 1 skipped
+    assert "empty-body guard" in prompt_text             # msg 3 included

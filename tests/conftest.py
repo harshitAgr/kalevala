@@ -44,9 +44,9 @@ def sample_transcript(tmp_path: Path) -> Path:
     """A minimal fixture transcript JSONL."""
     path = tmp_path / "transcript.jsonl"
     entries = [
-        {"uuid": "msg_1", "role": "user", "content": "fix the val loop crash"},
-        {"uuid": "msg_2", "role": "assistant", "content": "I'll investigate src/opet/val.py"},
-        {"uuid": "msg_3", "role": "assistant", "content": "Fixed: added empty-batch guard"},
+        {"uuid": "msg_1", "role": "user", "content": "fix the request handler crash"},
+        {"uuid": "msg_2", "role": "assistant", "content": "I'll investigate src/myapp/handlers.py"},
+        {"uuid": "msg_3", "role": "assistant", "content": "Fixed: added empty-body guard"},
     ]
     with path.open("w") as f:
         for e in entries:
