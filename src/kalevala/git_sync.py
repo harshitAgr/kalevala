@@ -3,7 +3,7 @@
 Flow:
   add -A → commit (skip if nothing to commit) → push (if auto_push)
 On push failure due to non-fast-forward:
-  fetch → merge --no-rebase. If no conflict, push. Else queue the push
+  fetch → merge. If no conflict, push. Else queue the push
   in pending.json and surface via status.
 """
 from __future__ import annotations
@@ -97,7 +97,7 @@ def commit_and_push(cfg: Config, message: str) -> CommitResult:
         _queue_push(cfg, message, reason="fetch_failed", stderr=fetch.stderr)
         return CommitResult(True, False, "fetch failed — queued")
 
-    merge = _git(cfg, "merge", "--no-rebase", "--no-edit",
+    merge = _git(cfg, "merge", "--no-edit",
                  f"{cfg.git_remote}/{cfg.git_branch}", check=False)
     if merge.returncode == 0:
         push2 = _git(cfg, "push", cfg.git_remote, cfg.git_branch, check=False)
