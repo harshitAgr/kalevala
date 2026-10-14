@@ -20,10 +20,13 @@ When the user invokes `/kalevala <subcommand> [args]`, run the corresponding `ka
 | `/kalevala resume <query>` | `kalevala resume "<query>"` |
 | `/kalevala drain` | `kalevala drain` |
 | `/kalevala status` | `kalevala status` |
+| `/kalevala check` | `kalevala check` |
+| `/kalevala check YYYY-MM-DD` | `kalevala check YYYY-MM-DD` |
+| `/kalevala rebuild YYYY-MM-DD` | `kalevala rebuild YYYY-MM-DD` |
 
 ## Usage notes
 
 - Always quote the `<text>` / `<query>` argument to preserve whitespace.
 - If the CLI exits nonzero, surface stderr to the user — do not silently swallow errors.
 - `note` and `todo` auto-commit to the journal repo; mention that to the user on success.
-- Do NOT invent new subcommands. If the user types something not in the table above, respond: "Unknown kalevala subcommand; try one of: note, todo, show, last, search, resume, drain, status."
+- Do NOT invent new subcommands. If the user types something not in the table above, respond: "Unknown kalevala subcommand; try one of: note, todo, show, last, search, resume, drain, status, check, rebuild."

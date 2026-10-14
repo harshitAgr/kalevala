@@ -5,6 +5,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,16 @@ class Config:
     git_branch: str
     scrub_threshold: int = 20
     lock_wait_seconds: int = 30
+    timezone: str = ""  # IANA name for journal days and times; empty = machine local
+
+    @property
+    def tzinfo(self) -> ZoneInfo | None:
+        return ZoneInfo(self.timezone) if self.timezone else None
+
+    @property
+    def transcripts_dir(self) -> Path:
+        base = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+        return Path(base) / "projects"
 
     @property
     def state_dir(self) -> Path:
@@ -68,4 +79,5 @@ def load_config() -> Config:
         git_branch=data.get("git_branch", "main"),
         scrub_threshold=int(data.get("scrub_threshold", 20)),
         lock_wait_seconds=int(data.get("lock_wait_seconds", 30)),
+        timezone=data.get("timezone", ""),
     )

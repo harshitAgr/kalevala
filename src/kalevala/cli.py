@@ -9,7 +9,7 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
-from .clients import build_client
+from .clients import INTERNAL_ENV, build_client
 from .config import Config, load_config
 from .git_sync import commit_and_push
 from .merger import add_manual_note, add_manual_todo
@@ -44,6 +44,8 @@ def _resolve_hook_inputs(args: argparse.Namespace) -> tuple[str, str]:
 
 
 def cmd_hook(args: argparse.Namespace, cfg: Config) -> int:
+    if os.environ.get(INTERNAL_ENV):
+        return 0  # our own summarization run ending; it has no transcript
     session_id, transcript_path = _resolve_hook_inputs(args)
     if args.verify_scrub:
         from .scrubber import Scrubber
@@ -158,6 +160,44 @@ def cmd_status(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def _days_arg(args: argparse.Namespace) -> list[str]:
+    if args.dates:
+        return sorted({_dt.date.fromisoformat(d).isoformat() for d in args.dates})
+    today = _dt.date.today()
+    return [(today - timedelta(days=n)).isoformat() for n in range(args.days, 0, -1)]
+
+
+def cmd_check(args: argparse.Namespace, cfg: Config) -> int:
+    from .rebuild import check_days
+    reports = check_days(cfg, _days_arg(args))
+    for r in reports:
+        if r.ok:
+            status = "ok"
+        else:
+            status = ", ".join(p for p in (
+                f"{len(r.missing)} missing" if r.missing else "",
+                f"{len(r.misfiled)} misfiled" if r.misfiled else "",
+            ) if p)
+        note = f" ({len(r.unverifiable)} without transcript)" if r.unverifiable else ""
+        print(f"{r.day}  {len(r.active):2d} active  {status}{note}")
+        for s in r.missing:
+            print(f"    missing   {s.session_id}  {s.span(cfg)}  {s.project}")
+        for sid in r.misfiled:
+            print(f"    misfiled  {sid}  (no turns on this day)")
+    bad = [r.day for r in reports if not r.ok]
+    if bad:
+        print(f"fix with: kalevala rebuild {' '.join(bad)}")
+    return 1 if bad else 0
+
+
+def cmd_rebuild(args: argparse.Namespace, cfg: Config) -> int:
+    from .rebuild import rebuild_days
+    for line in rebuild_days(cfg, _client(), _days_arg(args), jobs=args.jobs,
+                             allow_drop=set(args.allow_drop)):
+        print(line)
+    return 0
+
+
 def cmd_drain(args: argparse.Namespace, cfg: Config) -> int:
     from .pipeline import _drain_pending
     client = _client()
@@ -190,6 +230,17 @@ def main() -> int:
     sub.add_parser("status")
     sub.add_parser("drain")
 
+    p_check = sub.add_parser("check", help="compare entries with the transcripts on disk")
+    p_check.add_argument("dates", nargs="*", help="YYYY-MM-DD (default: the --days days before today)")
+    p_check.add_argument("--days", type=int, default=7)
+
+    p_rebuild = sub.add_parser("rebuild", help="regenerate days from the transcripts on disk")
+    p_rebuild.add_argument("dates", nargs="+", help="YYYY-MM-DD")
+    p_rebuild.add_argument("--jobs", type=int, default=4, help="summaries run in parallel")
+    p_rebuild.add_argument("--allow-drop", action="append", default=[], metavar="SESSION_ID",
+                           help="let the rebuild remove this misfiled session even though one of its "
+                                "days is not being rebuilt (its work is filed elsewhere)")
+
     args = parser.parse_args()
     cfg = load_config()
     handlers = {
@@ -197,6 +248,7 @@ def main() -> int:
         "show": cmd_show, "last": cmd_last,
         "search": cmd_search, "resume": cmd_resume,
         "drain": cmd_drain, "status": cmd_status,
+        "check": cmd_check, "rebuild": cmd_rebuild,
     }
     return handlers[args.cmd](args, cfg)
 
