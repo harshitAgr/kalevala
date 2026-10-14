@@ -4,7 +4,7 @@ Daily journal of Claude Code work. A `SessionEnd` hook summarizes each session v
 
 ## What it does
 
-- One markdown file per day under `entries/YYYY/MM/YYYY-MM-DD.md`
+- One markdown file per day under `entries/YYYY/MM/YYYY-MM-DD.md`; a session is filed under the days its turns were written (a session closed the next morning still lands on yesterday), split per day if it spans several
 - Rich content per session: summary, files touched, commits, bugs fixed, decisions, learnings, notes for later, open threads
 - Tracks session IDs so you can `claude --resume <id>` straight from the journal
 - Auto-commits and pushes to a private GitHub repo (separate from this tool)
@@ -91,6 +91,23 @@ kalevala search <query>    # grep across all entries
 kalevala resume <query>    # print `claude --resume <id>` for the matching session
 kalevala drain             # manually retry queued commits/pushes
 kalevala status            # pending count, state health, error count
+kalevala check            # compare the 7 days before today with the transcripts on disk (--days N)
+kalevala check 2026-04-17 # one day; exits 1 if a session is missing or misfiled
+kalevala rebuild 2026-04-17  # regenerate a day from its transcripts (keeps manual notes)
+```
+
+`check` and `rebuild` read `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`), so they only
+reach back as far as Claude Code keeps transcripts (`cleanupPeriodDays`, 30 by default). `rebuild`
+refuses a day whose entry lists a session that no longer has a transcript, and refuses to drop a
+misfiled session whose own days are not part of the rebuild (rebuild them together, or pass
+`--allow-drop <id>` when its work is already filed elsewhere). It also refuses when a summary reaches
+the scrub threshold (`--allow-drop <id>` leaves that session out). Finished summaries are cached, so
+a rebuild that fails part-way resumes when run again.
+
+Days and times use the machine's local zone. To use another, set an IANA name in `config.toml`:
+
+```toml
+timezone = "Europe/Helsinki"
 ```
 
 Or from inside Claude Code:
@@ -121,6 +138,7 @@ Or from inside Claude Code:
 
 - `kalevala status` — pending queue, state file health, recent error count
 - `kalevala drain` — manually retry queued pushes
+- `kalevala check` — find days whose entry disagrees with the transcripts; `kalevala rebuild <date>` fixes one
 - `kalevala hook --verify-scrub --transcript-path <path>` — dry-run the scrubber against any transcript
 - Errors go to `<log_repo>/.kalevala/errors.log` and `~/.kalevala/hook.err`
 

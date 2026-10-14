@@ -4,12 +4,16 @@ Pipeline:
   1. Acquire lock (may queue and exit if starved)
   2. Drain pending.json (skip entries not yet due)
   3. Lookup session cursor
-  4. If new messages since cursor — summarize via Sonnet
+  4. If new turns since cursor — for each day those turns were written on,
+     summarize all of the session's turns from that day
   5. Normalize paths → scrub secrets
-  6. Check scrub threshold → merge into daily file
+  6. Check scrub threshold → merge into that day's file
   7. git commit + push
   8. Update state
   9. Release lock
+
+A session is filed under the days its turns were written, not the day the
+hook runs: a session closed the morning after is still yesterday's work.
 
 Any step that raises is caught, logged to errors.log, and returns
 processed=False. The hook itself never re-raises to the caller.
@@ -27,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config
-from .generator import summarize_session, SessionSummary
+from .generator import SessionSummary, Turn, load_turns, summarize_turns, turn_day
 from .git_sync import commit_and_push
 from .lock import FileLock, LockTimeout
 from .merger import merge_session
@@ -124,6 +128,11 @@ def _drain_pending(cfg: Config, client: Any, today: str) -> None:
             continue
         kind = it.get("kind")
         if kind == "session":
+            if not Path(it["transcript_path"]).exists():
+                # never written (a --no-session-persistence run) or already
+                # cleaned up; retrying cannot bring it back
+                _log_error(cfg, f"dropping queued session {it.get('session_id')}: transcript missing")
+                continue
             try:
                 _process_session(
                     cfg=cfg, client=client, today=today,
@@ -157,8 +166,8 @@ def _drain_pending(cfg: Config, client: Any, today: str) -> None:
     _write_pending(cfg, remaining)
 
 
-def _project_name(cfg: Config) -> str:
-    return os.environ.get("CLAUDE_PROJECT_DIR", "").rstrip("/").rsplit("/", 1)[-1] or "unknown"
+def _project_name(project_dir: str) -> str:
+    return project_dir.rstrip("/").rsplit("/", 1)[-1] or "unknown"
 
 
 def _scrub_summary_fields(summary_dict: dict) -> tuple[dict, int]:
@@ -185,6 +194,29 @@ def _scrub_summary_fields(summary_dict: dict) -> tuple[dict, int]:
     return out, total
 
 
+def summarize_day(
+    cfg: Config, client: Any, day_turns: list[Turn], project_dir: str,
+) -> tuple[SessionSummary, int]:
+    """Summarize one session's turns from one day; return the normalized,
+    scrubbed summary and the number of redactions made."""
+    summary = summarize_turns(day_turns, cfg, client)
+    summary_dict = normalize_paths(
+        summary.model_dump(),
+        home=os.environ.get("HOME", str(Path.home())),
+        project_dir=project_dir,
+        project_name=summary.project or _project_name(project_dir),
+    )
+    summary_dict, total_redactions = _scrub_summary_fields(summary_dict)
+    return SessionSummary(**summary_dict), total_redactions
+
+
+def turns_by_day(turns: list[Turn], cfg: Config, fallback: str) -> dict[str, list[Turn]]:
+    days: dict[str, list[Turn]] = {}
+    for t in turns:
+        days.setdefault(turn_day(t, cfg, fallback), []).append(t)
+    return days
+
+
 def _process_session(
     *,
     cfg: Config,
@@ -200,60 +232,52 @@ def _process_session(
     state = State(cfg)
     cursor = state.get(session_id)
     start_idx = cursor.last_processed_msg_idx + 1 if cursor else 0
-    first_seen = cursor.first_seen_date if cursor else today
 
-    with transcript_path.open() as f:
-        total = sum(1 for line in f if line.strip())
-
-    # no new messages since last cursor OR empty transcript on first run
-    if start_idx >= total:
+    turns = load_turns(transcript_path)
+    new_turns = turns[start_idx:]
+    # nothing new since the last run (a resume closed without a prompt) or an empty transcript
+    if not new_turns:
         return False
 
-    summary = summarize_session(transcript_path, start_idx, cfg, client)
+    by_day = turns_by_day(turns, cfg, today)
+    first_day = min(by_day)
+    # each day with new turns is re-summarized whole, so the merge can replace
+    # that day's block without losing what an earlier run of this session wrote
+    days = sorted({turn_day(t, cfg, today) for t in new_turns})
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "") or turns[0].cwd
 
-    home = os.environ.get("HOME", str(Path.home()))
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
-    summary_dict = summary.model_dump()
-    summary_dict = normalize_paths(
-        summary_dict,
-        home=home,
-        project_dir=project_dir,
-        project_name=summary.project or _project_name(cfg),
-    )
+    summaries: list[tuple[str, SessionSummary]] = []
+    for day in days:
+        summary, total_redactions = summarize_day(cfg, client, by_day[day], project_dir)
+        if total_redactions >= cfg.scrub_threshold:
+            msg = f"[SCRUB_THRESHOLD_EXCEEDED] session={session_id} day={day} redactions={total_redactions}"
+            print(msg, file=sys.stderr)
+            _log_error(cfg, msg)
+            _write_status(cfg, pending_manual_review=True)
+            _queue_pending(cfg, {
+                "kind": "session",
+                "session_id": session_id,
+                "transcript_path": str(transcript_path),
+                "reason": "scrub_threshold_exceeded",
+            })
+            return False
+        summaries.append((day, summary))
 
-    summary_dict, total_redactions = _scrub_summary_fields(summary_dict)
+    for day, summary in summaries:
+        merge_session(cfg, day, session_id, summary,
+                      continued_from=first_day if day != first_day else None)
 
-    if total_redactions >= cfg.scrub_threshold:
-        msg = f"[SCRUB_THRESHOLD_EXCEEDED] session={session_id} redactions={total_redactions}"
-        print(msg, file=sys.stderr)
-        _log_error(cfg, msg)
-        _write_status(cfg, pending_manual_review=True)
-        _queue_pending(cfg, {
-            "kind": "session",
-            "session_id": session_id,
-            "transcript_path": str(transcript_path),
-            "reason": "scrub_threshold_exceeded",
-        })
-        return False
-
-    scrubbed_summary = SessionSummary(**summary_dict)
-
-    continued_from = None
-    if cursor and cursor.last_update_date != today:
-        continued_from = cursor.first_seen_date
-
-    merge_session(cfg, today, session_id, scrubbed_summary, continued_from=continued_from)
-
-    result = commit_and_push(cfg, f"journal: session {session_id} ({scrubbed_summary.project})")
+    project = summaries[-1][1].project
+    result = commit_and_push(cfg, f"journal: session {session_id} ({project}) {', '.join(days)}")
     if not result.pushed and cfg.auto_push:
         print(f"[kalevala] commit not pushed: {result.message}", file=sys.stderr)
 
     new_cursor = SessionCursor(
-        last_processed_msg_idx=summary.last_msg_idx,
-        last_msg_uuid=summary.last_msg_uuid,
-        last_update_date=today,
-        first_seen_date=first_seen,
-        project=scrubbed_summary.project,
+        last_processed_msg_idx=turns[-1].idx,
+        last_msg_uuid=turns[-1].uuid,
+        last_update_date=days[-1],
+        first_seen_date=first_day,
+        project=project,
     )
     state.set(session_id, new_cursor)
     state.save()
@@ -268,7 +292,7 @@ def run_hook(
     *,
     today: str | None = None,
 ) -> HookResult:
-    today = today or _dt.date.today().isoformat()
+    today = today or cfg.today().isoformat()
     try:
         with FileLock(cfg.lock_path, wait_seconds=cfg.lock_wait_seconds):
             _drain_pending(cfg, client, today)

@@ -92,19 +92,18 @@ def test_drain_preserves_items_added_during_drain(tmp_config: Path, tmp_path: Pa
     seed_qid = _uuid.uuid4().hex
     cfg.pending_file.write_text(json.dumps([
         {"queue_id": seed_qid, "kind": "session", "session_id": "drainA",
-         "transcript_path": str(tmp_path / "nope.jsonl"),
+         "transcript_path": str(_transcript(tmp_path / "drainA.jsonl")),
          "next_retry_at": due, "attempts": 0, "reason": "seed"}
     ]))
 
     from kalevala import pipeline as _pl
-    original_process = _pl._process_session
     def _injecting_process(*args, **kwargs):
         current = _pl._read_pending(cfg)
         current.append({"queue_id": _uuid.uuid4().hex, "kind": "push",
                         "message": "injected-during-drain",
                         "next_retry_at": 0, "attempts": 0})
         _pl._write_pending(cfg, current)
-        return original_process(*args, **kwargs)
+        raise RuntimeError("simulated summary failure")
     monkeypatch.setattr(_pl, "_process_session", _injecting_process)
 
     client = MagicMock()

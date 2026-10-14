@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+# set on our own `claude --print` children; their SessionEnd hook is a no-op
+INTERNAL_ENV = "KALEVALA_INTERNAL"
+
 
 @dataclass
 class ClaudeCliClient:
@@ -19,13 +22,16 @@ class ClaudeCliClient:
     Why: avoids requiring ANTHROPIC_API_KEY. The `claude` CLI uses whatever
     auth the user has configured (OAuth via Pro/Max login, or API key).
 
-    --no-session-persistence is load-bearing: it prevents the hook's own
-    summarization from creating a new session transcript, which would
-    re-trigger the SessionEnd hook on its own shutdown (infinite loop).
+    --no-session-persistence keeps the summarization run from writing a
+    transcript. It does not stop that run's SessionEnd hook from firing, so
+    INTERNAL_ENV is set on the child and `kalevala hook` returns at once when
+    it sees it; without that, every summary queued a dead pending entry
+    after a lock wait.
     """
 
     binary: str = "claude"
-    timeout_seconds: int = 120
+    # a day of a long session runs to a few hundred kB of prompt; 120 s timed out on those
+    timeout_seconds: int = 600
 
     @property
     def messages(self) -> "ClaudeCliClient":
@@ -63,6 +69,7 @@ class ClaudeCliClient:
             timeout=self.timeout_seconds,
             check=True,
             cwd=os.environ.get("HOME", str(Path.home())),
+            env={**os.environ, INTERNAL_ENV: "1"},
         )
         return SimpleNamespace(content=[SimpleNamespace(text=result.stdout)])
 
