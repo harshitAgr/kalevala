@@ -1,4 +1,4 @@
-"""Check and rebuild journal days against the Claude Code transcripts on disk.
+"""Check and rebuild journal days against the session transcripts on disk.
 
 `check` compares each day's entry with the sessions that have turns written
 on that day: a session active that day but absent from the entry is missing;
@@ -6,7 +6,7 @@ a session in the entry with no turns that day is misfiled. `rebuild`
 regenerates a day's session blocks, auto notes and open threads from those
 transcripts, keeping manual notes.
 
-Claude Code deletes old transcripts (cleanupPeriodDays, 30 by default), so
+Old transcripts are deleted (cleanupPeriodDays, 30 by default), so
 both only work for recent days. A day whose entry lists a session with no
 transcript left is reported, and is not rebuilt, since that would drop it.
 """
@@ -184,6 +184,43 @@ def _summarize_all(
     return results
 
 
+def _refuse_over_threshold(
+    cfg: Config, results: list[tuple[str, DaySession, SessionSummary, int]], allow_drop: set[str],
+) -> None:
+    over = [f"{day} {s.session_id} ({redactions})" for day, s, _, redactions in results
+            if redactions >= cfg.scrub_threshold and s.session_id not in allow_drop]
+    if over:
+        raise RuntimeError(
+            f"summaries reach the scrub threshold ({cfg.scrub_threshold} redactions), not rebuilding; "
+            f"review those sessions, or --allow-drop one to leave it out: {'; '.join(over)}"
+        )
+
+
+def _advance_cursor(
+    cfg: Config, state: State, merged: list[tuple[str, DaySession, SessionSummary]],
+) -> None:
+    """Move a session's cursor over the turns this rebuild journaled: from the
+    old cursor, through consecutive turns on the days it wrote. A day before
+    them that is not journaled stops it, so the hook still picks that day up."""
+    days = {day for day, _, _ in merged}
+    upto = max(s.turns[-1].idx for _, s, _ in merged)  # turns written since were not summarized
+    _, s, summary = merged[-1]
+    cursor = state.get(s.session_id)
+    last = None
+    for t in load_turns(s.path)[cursor.last_processed_msg_idx + 1 if cursor else 0:]:
+        if t.idx > upto or turn_day(t, cfg, "") not in days:
+            break
+        last = t
+    if last is not None:
+        state.set(s.session_id, SessionCursor(
+            last_processed_msg_idx=last.idx,
+            last_msg_uuid=last.uuid,
+            last_update_date=turn_day(last, cfg, ""),
+            first_seen_date=s.first_day,
+            project=summary.project,
+        ))
+
+
 def rebuild_days(
     cfg: Config, client: Any, days: list[str], root: Path | None = None, *, jobs: int = 4,
     allow_drop: set[str] = frozenset(), attempts: int = 3,
@@ -194,31 +231,27 @@ def rebuild_days(
     Summaries are made outside the journal lock (sessions ending meanwhile are
     journaled as usual), then the plan is re-checked under the lock.
     Returns one line per session, for the caller to print."""
-    _summarize_all(cfg, client, _plan(cfg, days, root, allow_drop), jobs, attempts)
+    results = _summarize_all(cfg, client, _plan(cfg, days, root, allow_drop), jobs, attempts)
+    _refuse_over_threshold(cfg, results, allow_drop)
     with FileLock(cfg.lock_path, wait_seconds=max(cfg.lock_wait_seconds, 600)):
         results = _summarize_all(cfg, client, _plan(cfg, days, root, allow_drop), jobs, attempts)
+        _refuse_over_threshold(cfg, results, allow_drop)
 
         lines: list[str] = []
         state = State(cfg)
         for day in days:
             reset_day(cfg, day)
+        merged: dict[str, list[tuple[str, DaySession, SessionSummary]]] = {}
         for day, s, summary, redactions in results:
-            if redactions >= cfg.scrub_threshold:
+            if redactions >= cfg.scrub_threshold:  # in allow_drop, or it would have been refused
                 lines.append(f"{day}  {s.session_id}  SKIPPED: {redactions} redactions (threshold {cfg.scrub_threshold})")
                 continue
             merge_session(cfg, day, s.session_id, summary,
                           continued_from=s.first_day if s.first_day != day else None)
-            last = s.turns[-1]
-            cursor = state.get(s.session_id)
-            if cursor is None or cursor.last_processed_msg_idx < last.idx:
-                state.set(s.session_id, SessionCursor(
-                    last_processed_msg_idx=last.idx,
-                    last_msg_uuid=last.uuid,
-                    last_update_date=day,
-                    first_seen_date=s.first_day,
-                    project=summary.project,
-                ))
+            merged.setdefault(s.session_id, []).append((day, s, summary))
             lines.append(f"{day}  {s.session_id}  {s.span(cfg)}  {summary.project}")
+        for session_days in merged.values():
+            _advance_cursor(cfg, state, session_days)
         state.save()
         commit_and_push(cfg, f"journal: rebuild {', '.join(days)}")
         for day, s, _, _ in results:

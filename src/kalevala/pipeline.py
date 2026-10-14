@@ -5,7 +5,7 @@ Pipeline:
   2. Drain pending.json (skip entries not yet due)
   3. Lookup session cursor
   4. If new turns since cursor — for each day those turns were written on,
-     summarize all of the session's turns from that day via Sonnet
+     summarize all of the session's turns from that day
   5. Normalize paths → scrub secrets
   6. Check scrub threshold → merge into that day's file
   7. git commit + push
@@ -292,7 +292,7 @@ def run_hook(
     *,
     today: str | None = None,
 ) -> HookResult:
-    today = today or _dt.date.today().isoformat()
+    today = today or cfg.today().isoformat()
     try:
         with FileLock(cfg.lock_path, wait_seconds=cfg.lock_wait_seconds):
             _drain_pending(cfg, client, today)

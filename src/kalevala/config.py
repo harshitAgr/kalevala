@@ -1,6 +1,7 @@
 """Load ~/.config/kalevala/config.toml (or $KALEVALA_CONFIG override)."""
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import tomllib
 from dataclasses import dataclass
@@ -22,6 +23,9 @@ class Config:
     @property
     def tzinfo(self) -> ZoneInfo | None:
         return ZoneInfo(self.timezone) if self.timezone else None
+
+    def today(self) -> _dt.date:
+        return _dt.datetime.now(self.tzinfo).date()
 
     @property
     def transcripts_dir(self) -> Path:

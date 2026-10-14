@@ -1,4 +1,6 @@
 """check / rebuild: compare and regenerate days from the transcripts on disk."""
+import dataclasses
+import sys
 from pathlib import Path
 
 import pytest
@@ -124,3 +126,49 @@ def test_rebuild_retries_a_failed_summary(setup):
                  root, jobs=1, attempts=2)
 
     assert "id: s1" in day_file(cfg, "2026-10-13").read_text()
+
+
+def test_rebuild_refuses_a_summary_over_the_scrub_threshold(setup):
+    cfg, root = setup
+    cfg = dataclasses.replace(cfg, scrub_threshold=0)  # every summary reaches it
+    before = day_file(cfg, "2026-10-14").read_text()
+
+    with pytest.raises(RuntimeError, match="scrub threshold"):
+        rebuild_days(cfg, recording_client(), ["2026-10-13", "2026-10-14"], root, jobs=1)
+    assert day_file(cfg, "2026-10-14").read_text() == before
+
+    lines = rebuild_days(cfg, recording_client(), ["2026-10-13", "2026-10-14"], root, jobs=1,
+                         allow_drop={"s1"})
+    assert lines == ["2026-10-13  s1  SKIPPED: 0 redactions (threshold 0)"]
+    assert State(cfg).get("s1") is None
+
+
+def test_rebuild_leaves_the_cursor_before_a_day_it_did_not_journal(setup):
+    cfg, root = setup
+    # s3 is still open: it ran on the 12th and the 13th, and nothing of it is journaled yet
+    write_transcript(root / "-home-u-projects-myapp" / "s3.jsonl", [
+        turn(0, "2026-10-12T20:00:00Z"), turn(1, "2026-10-13T10:00:00Z", "assistant"),
+    ])
+
+    rebuild_days(cfg, recording_client(), ["2026-10-13", "2026-10-14"], root, jobs=1)
+    assert State(cfg).get("s3") is None  # so the hook still files the 12th when s3 ends
+
+    rebuild_days(cfg, recording_client(), ["2026-10-12", "2026-10-13"], root, jobs=1)
+    assert State(cfg).get("s3").last_processed_msg_idx == 1
+
+
+def test_cli_rejects_bad_arguments_and_prints_refusals(tmp_config, monkeypatch, capsys):
+    from kalevala import cli, rebuild
+
+    for argv in (["check", "--days", "0"], ["rebuild", "2026-13-01"]):
+        monkeypatch.setattr(sys, "argv", ["kalevala", *argv])
+        with pytest.raises(SystemExit):
+            cli.main()
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("would drop s9")
+    monkeypatch.setattr(rebuild, "rebuild_days", refuse)
+    monkeypatch.setattr(cli, "_client", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["kalevala", "rebuild", "2026-10-13"])
+    assert cli.main() == 1
+    assert "would drop s9" in capsys.readouterr().err

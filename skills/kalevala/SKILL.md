@@ -21,8 +21,9 @@ When the user invokes `/kalevala <subcommand> [args]`, run the corresponding `ka
 | `/kalevala drain` | `kalevala drain` |
 | `/kalevala status` | `kalevala status` |
 | `/kalevala check` | `kalevala check` |
-| `/kalevala check YYYY-MM-DD` | `kalevala check YYYY-MM-DD` |
-| `/kalevala rebuild YYYY-MM-DD` | `kalevala rebuild YYYY-MM-DD` |
+| `/kalevala check --days N` | `kalevala check --days N` |
+| `/kalevala check YYYY-MM-DD [YYYY-MM-DD ...]` | `kalevala check YYYY-MM-DD [YYYY-MM-DD ...]` |
+| `/kalevala rebuild YYYY-MM-DD [YYYY-MM-DD ...] [--allow-drop SESSION_ID]` | `kalevala rebuild YYYY-MM-DD [YYYY-MM-DD ...] [--allow-drop SESSION_ID]` |
 
 ## Usage notes
 

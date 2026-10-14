@@ -91,7 +91,7 @@ kalevala search <query>    # grep across all entries
 kalevala resume <query>    # print `claude --resume <id>` for the matching session
 kalevala drain             # manually retry queued commits/pushes
 kalevala status            # pending count, state health, error count
-kalevala check            # compare the last 7 days' entries with the transcripts on disk
+kalevala check            # compare the 7 days before today with the transcripts on disk (--days N)
 kalevala check 2026-04-17 # one day; exits 1 if a session is missing or misfiled
 kalevala rebuild 2026-04-17  # regenerate a day from its transcripts (keeps manual notes)
 ```
@@ -100,8 +100,9 @@ kalevala rebuild 2026-04-17  # regenerate a day from its transcripts (keeps manu
 reach back as far as Claude Code keeps transcripts (`cleanupPeriodDays`, 30 by default). `rebuild`
 refuses a day whose entry lists a session that no longer has a transcript, and refuses to drop a
 misfiled session whose own days are not part of the rebuild (rebuild them together, or pass
-`--allow-drop <id>` when its work is already filed elsewhere). Finished summaries are cached, so a
-rebuild that fails part-way resumes when run again.
+`--allow-drop <id>` when its work is already filed elsewhere). It also refuses when a summary reaches
+the scrub threshold (`--allow-drop <id>` leaves that session out). Finished summaries are cached, so
+a rebuild that fails part-way resumes when run again.
 
 Days and times use the machine's local zone. To use another, set an IANA name in `config.toml`:
 

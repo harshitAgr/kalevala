@@ -16,8 +16,8 @@ from .merger import add_manual_note, add_manual_todo
 from .pipeline import run_hook
 
 
-def _today() -> str:
-    return _dt.date.today().isoformat()
+def _today(cfg: Config) -> str:
+    return cfg.today().isoformat()
 
 
 def _client():
@@ -70,14 +70,14 @@ def cmd_hook(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_note(args: argparse.Namespace, cfg: Config) -> int:
-    add_manual_note(cfg, _today(), args.text)
-    commit_and_push(cfg, f"journal: manual note ({_today()})")
+    add_manual_note(cfg, _today(cfg), args.text)
+    commit_and_push(cfg, f"journal: manual note ({_today(cfg)})")
     return 0
 
 
 def cmd_todo(args: argparse.Namespace, cfg: Config) -> int:
-    add_manual_todo(cfg, _today(), args.text)
-    commit_and_push(cfg, f"journal: manual TODO ({_today()})")
+    add_manual_todo(cfg, _today(cfg), args.text)
+    commit_and_push(cfg, f"journal: manual TODO ({_today(cfg)})")
     return 0
 
 
@@ -87,7 +87,7 @@ def _date_file(cfg: Config, date_str: str) -> Path:
 
 
 def cmd_show(args: argparse.Namespace, cfg: Config) -> int:
-    target_date = args.date or _today()
+    target_date = args.date or _today(cfg)
     path = _date_file(cfg, target_date)
     if not path.exists():
         print(f"[kalevala] no entry for {target_date}")
@@ -97,7 +97,7 @@ def cmd_show(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_last(args: argparse.Namespace, cfg: Config) -> int:
-    yesterday = (_dt.date.today() - timedelta(days=1)).isoformat()
+    yesterday = (cfg.today() - timedelta(days=1)).isoformat()
     path = _date_file(cfg, yesterday)
     if not path.exists():
         print(f"[kalevala] no entry for {yesterday}")
@@ -160,16 +160,30 @@ def cmd_status(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
-def _days_arg(args: argparse.Namespace) -> list[str]:
+def _iso_date(text: str) -> str:
+    try:
+        return _dt.date.fromisoformat(text).isoformat()
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a YYYY-MM-DD date: {text!r}") from None
+
+
+def _positive_int(text: str) -> int:
+    n = int(text)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1: {n}")
+    return n
+
+
+def _days_arg(args: argparse.Namespace, cfg: Config) -> list[str]:
     if args.dates:
-        return sorted({_dt.date.fromisoformat(d).isoformat() for d in args.dates})
-    today = _dt.date.today()
+        return sorted(set(args.dates))
+    today = cfg.today()
     return [(today - timedelta(days=n)).isoformat() for n in range(args.days, 0, -1)]
 
 
 def cmd_check(args: argparse.Namespace, cfg: Config) -> int:
     from .rebuild import check_days
-    reports = check_days(cfg, _days_arg(args))
+    reports = check_days(cfg, _days_arg(args, cfg))
     for r in reports:
         if r.ok:
             status = "ok"
@@ -192,8 +206,13 @@ def cmd_check(args: argparse.Namespace, cfg: Config) -> int:
 
 def cmd_rebuild(args: argparse.Namespace, cfg: Config) -> int:
     from .rebuild import rebuild_days
-    for line in rebuild_days(cfg, _client(), _days_arg(args), jobs=args.jobs,
-                             allow_drop=set(args.allow_drop)):
+    try:
+        lines = rebuild_days(cfg, _client(), _days_arg(args, cfg), jobs=args.jobs,
+                             allow_drop=set(args.allow_drop))
+    except RuntimeError as e:
+        print(f"[kalevala] {e}", file=sys.stderr)
+        return 1
+    for line in lines:
         print(line)
     return 0
 
@@ -201,7 +220,7 @@ def cmd_rebuild(args: argparse.Namespace, cfg: Config) -> int:
 def cmd_drain(args: argparse.Namespace, cfg: Config) -> int:
     from .pipeline import _drain_pending
     client = _client()
-    _drain_pending(cfg, client, _today())
+    _drain_pending(cfg, client, _today(cfg))
     print("drain complete")
     return 0
 
@@ -231,15 +250,16 @@ def main() -> int:
     sub.add_parser("drain")
 
     p_check = sub.add_parser("check", help="compare entries with the transcripts on disk")
-    p_check.add_argument("dates", nargs="*", help="YYYY-MM-DD (default: the --days days before today)")
-    p_check.add_argument("--days", type=int, default=7)
+    p_check.add_argument("dates", nargs="*", type=_iso_date, help="YYYY-MM-DD (default: the --days days before today)")
+    p_check.add_argument("--days", type=_positive_int, default=7)
 
     p_rebuild = sub.add_parser("rebuild", help="regenerate days from the transcripts on disk")
-    p_rebuild.add_argument("dates", nargs="+", help="YYYY-MM-DD")
-    p_rebuild.add_argument("--jobs", type=int, default=4, help="summaries run in parallel")
+    p_rebuild.add_argument("dates", nargs="+", type=_iso_date, help="YYYY-MM-DD")
+    p_rebuild.add_argument("--jobs", type=_positive_int, default=4, help="summaries run in parallel")
     p_rebuild.add_argument("--allow-drop", action="append", default=[], metavar="SESSION_ID",
-                           help="let the rebuild remove this misfiled session even though one of its "
-                                "days is not being rebuilt (its work is filed elsewhere)")
+                           help="let the rebuild leave this session out where it would otherwise refuse: "
+                                "misfiled with one of its days not being rebuilt (its work is filed "
+                                "elsewhere), or its summary reaches the scrub threshold")
 
     args = parser.parse_args()
     cfg = load_config()
