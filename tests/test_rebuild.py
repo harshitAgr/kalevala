@@ -1,5 +1,7 @@
 """check / rebuild: compare and regenerate days from the transcripts on disk."""
 import dataclasses
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -8,7 +10,7 @@ import pytest
 from kalevala.config import load_config
 from kalevala.generator import SessionSummary
 from kalevala.merger import add_manual_note, merge_session
-from kalevala.rebuild import check_days, rebuild_days
+from kalevala.rebuild import check_days, open_session_ids, rebuild_days
 from kalevala.state import State
 
 from test_activity_dates import day_file, recording_client, turn, write_transcript
@@ -19,7 +21,8 @@ def _summary(text: str) -> SessionSummary:
 
 
 @pytest.fixture
-def setup(tmp_config: Path, tmp_path: Path):
+def setup(tmp_config: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     with tmp_config.open("a") as f:
         f.write('timezone = "UTC"\n')
     cfg = load_config()
@@ -172,3 +175,38 @@ def test_cli_rejects_bad_arguments_and_prints_refusals(tmp_config, monkeypatch, 
     monkeypatch.setattr(sys, "argv", ["kalevala", "rebuild", "2026-10-13"])
     assert cli.main() == 1
     assert "would drop s9" in capsys.readouterr().err
+
+
+def test_check_lists_running_session_as_open_not_missing(setup):
+    cfg, root = setup
+
+    (live,) = check_days(cfg, ["2026-10-13"], root, open_ids={"s1"})
+    (dead,) = check_days(cfg, ["2026-10-13"], root, open_ids=set())
+
+    assert [s.session_id for s in live.open] == ["s1"] and live.missing == [] and live.ok
+    assert [s.session_id for s in dead.missing] == ["s1"] and dead.open == [] and not dead.ok
+
+
+def _starttime(pid: str) -> str:
+    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()[19]
+
+
+def test_open_session_ids(setup, tmp_path):
+    cfg, _ = setup
+    assert open_session_ids(cfg) == set()  # no sessions dir
+    sessions = tmp_path / "claude" / "sessions"
+    sessions.mkdir(parents=True)
+    me = str(os.getpid())
+
+    def put(name: str, **data) -> None:
+        (sessions / name).write_text(json.dumps(data))
+
+    put(f"{me}.json", pid=me, sessionId="live", procStart=_starttime(me))
+    put("1.json", pid=me, sessionId="reused", procStart="1")        # same pid, other process
+    put("999999999.json", pid="999999999", sessionId="gone", procStart="5")
+    put("stem.json", sessionId="nopid")                              # no pid, non-numeric stem
+    put(f"{me}.abc.key", sessionId="key")
+    (sessions / "bad.json").write_text("{not json")
+    (sessions / "list.json").write_text("[]")
+
+    assert open_session_ids(cfg) == {"live"}

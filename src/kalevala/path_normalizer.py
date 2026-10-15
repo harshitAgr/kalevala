@@ -11,7 +11,7 @@ import re
 import sys
 from typing import Any
 
-_FOREIGN_ABS = re.compile(r"/[A-Za-z_][A-Za-z0-9_/.\-]+\.[A-Za-z0-9]+")
+_FOREIGN_ABS = re.compile(r"(?<![\w.~/-])/[A-Za-z_][A-Za-z0-9_/.\-]+\.[A-Za-z0-9]+")
 
 
 def normalize_string(s: str, *, home: str, project_dir: str, project_name: str) -> str:

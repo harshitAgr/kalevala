@@ -185,19 +185,21 @@ def cmd_check(args: argparse.Namespace, cfg: Config) -> int:
     from .rebuild import check_days
     reports = check_days(cfg, _days_arg(args, cfg))
     for r in reports:
-        if r.ok:
-            status = "ok"
-        else:
-            status = ", ".join(p for p in (
-                f"{len(r.missing)} missing" if r.missing else "",
-                f"{len(r.misfiled)} misfiled" if r.misfiled else "",
-            ) if p)
+        status = ", ".join(p for p in (
+            f"{len(r.missing)} missing" if r.missing else "",
+            f"{len(r.misfiled)} misfiled" if r.misfiled else "",
+            f"{len(r.open)} open" if r.open else "",
+        ) if p) or "ok"
         note = f" ({len(r.unverifiable)} without transcript)" if r.unverifiable else ""
         print(f"{r.day}  {len(r.active):2d} active  {status}{note}")
         for s in r.missing:
             print(f"    missing   {s.session_id}  {s.span(cfg)}  {s.project}")
+        for s in r.open:
+            print(f"    open      {s.session_id}  {s.span(cfg)}  {s.project}")
         for sid in r.misfiled:
             print(f"    misfiled  {sid}  (no turns on this day)")
+    if any(r.open for r in reports):
+        print("open sessions are journaled when they end")
     bad = [r.day for r in reports if not r.ok]
     if bad:
         print(f"fix with: kalevala rebuild {' '.join(bad)}")

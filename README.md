@@ -92,7 +92,7 @@ kalevala resume <query>    # print `claude --resume <id>` for the matching sessi
 kalevala drain             # manually retry queued commits/pushes
 kalevala status            # pending count, state health, error count
 kalevala check            # compare the 7 days before today with the transcripts on disk (--days N)
-kalevala check 2026-04-17 # one day; exits 1 if a session is missing or misfiled
+kalevala check 2026-04-17 # one day; exits 1 if a session is missing or misfiled (sessions still running are listed as open and don't fail it)
 kalevala rebuild 2026-04-17  # regenerate a day from its transcripts (keeps manual notes)
 ```
 

@@ -84,3 +84,17 @@ def test_home_rewrite_emits_no_stderr(capsys):
         project_name="myapp",
     )
     assert capsys.readouterr().err == ""
+
+
+def test_relative_paths_do_not_warn(capsys):
+    kw = dict(home="/home/user", project_dir="/home/user/projects/myapp", project_name="myapp")
+    for s in ("runs/dryrun_2026-10-13/report/index.html", "bench/A1.03.07-v1.0.1-run"):
+        assert normalize_string(s, **kw) == s
+    assert capsys.readouterr().err == ""
+
+
+def test_absolute_paths_still_warn(capsys):
+    kw = dict(home="/home/user", project_dir="/home/user/projects/myapp", project_name="myapp")
+    normalize_string("see /opt/app/run.py and /etc/nginx/nginx.conf", **kw)
+    err = capsys.readouterr().err
+    assert "/opt/app/run.py" in err and "/etc/nginx/nginx.conf" in err
