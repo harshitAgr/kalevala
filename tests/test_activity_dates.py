@@ -165,3 +165,21 @@ def test_cli_client_marks_its_children_internal(monkeypatch):
     clients.ClaudeCliClient().messages.create(model="m", messages=[{"role": "user", "content": "hi"}])
 
     assert seen["env"]["KALEVALA_INTERNAL"] == "1"
+
+
+def test_check_prints_open_session_and_exits_zero(utc_config, tmp_path, monkeypatch, capsys):
+    import argparse
+    from kalevala import cli
+    claude = tmp_path / "claude"
+    write_transcript(claude / "projects" / "-home-u-projects-myapp" / "s1.jsonl", [
+        turn(0, "2026-10-13T08:00:00Z"), turn(1, "2026-10-13T09:00:00Z", "assistant"),
+    ])
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude))
+    monkeypatch.setattr("kalevala.rebuild.open_session_ids", lambda cfg: {"s1"})
+    cfg = load_config()
+    monkeypatch.setattr(cli, "_days_arg", lambda args, cfg: ["2026-10-13"])
+
+    assert cli.cmd_check(argparse.Namespace(), cfg) == 0
+    out = capsys.readouterr().out
+    assert "1 open" in out and "    open      s1  08:00" in out
+    assert "open sessions are journaled when they end" in out and "fix with" not in out

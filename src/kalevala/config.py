@@ -28,9 +28,16 @@ class Config:
         return _dt.datetime.now(self.tzinfo).date()
 
     @property
+    def claude_dir(self) -> Path:
+        return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+    @property
     def transcripts_dir(self) -> Path:
-        base = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
-        return Path(base) / "projects"
+        return self.claude_dir / "projects"
+
+    @property
+    def sessions_dir(self) -> Path:
+        return self.claude_dir / "sessions"  # one <pid>.json per running session
 
     @property
     def state_dir(self) -> Path:

@@ -2,7 +2,9 @@
 
 `check` compares each day's entry with the sessions that have turns written
 on that day: a session active that day but absent from the entry is missing;
-a session in the entry with no turns that day is misfiled. `rebuild`
+a session in the entry with no turns that day is misfiled. A missing session
+that is still running is listed as open instead: sessions are journaled when
+they end, so it is not a fault. `rebuild`
 regenerates a day's session blocks, auto notes and open threads from those
 transcripts, keeping manual notes.
 
@@ -51,7 +53,8 @@ class DaySession:
 class DayReport:
     day: str
     active: list[DaySession]
-    missing: list[DaySession]   # active that day, absent from the entry
+    missing: list[DaySession]   # active that day, absent from the entry, not running
+    open: list[DaySession]      # active that day, absent from the entry, still running
     misfiled: list[str]         # in the entry, no turns that day
     unverifiable: list[str]     # in the entry, transcript no longer on disk
 
@@ -91,17 +94,60 @@ def sessions_by_day(
     return out, on_disk
 
 
-def check_days(cfg: Config, days: list[str], root: Path | None = None) -> list[DayReport]:
+def _proc_starttime(pid: str) -> str | None:
+    """Field 22 of /proc/<pid>/stat; None if the process is gone."""
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # comm (field 2) may contain spaces and parens, so split after the last ")"
+    fields = text.rsplit(")", 1)[-1].split()
+    return fields[19] if len(fields) > 19 else None
+
+
+def open_session_ids(cfg: Config) -> set[str]:
+    """Ids of sessions whose process is alive: <claude dir>/sessions/<pid>.json
+    names the pid (the file's "pid" field, else its stem) and the process start
+    time, which guards against stale files and reused pids. Never raises."""
+    out: set[str] = set()
+    try:
+        files = sorted(cfg.sessions_dir.glob("*.json"))
+    except OSError:
+        return out
+    for path in files:
+        try:
+            data = json.loads(path.read_text())
+            sid = str(data["sessionId"])
+            pid = str(data.get("pid") or path.stem)
+            if not pid.isdigit():
+                continue
+            start = _proc_starttime(pid)
+            proc_start = data.get("procStart")
+            if start is None or (proc_start is not None and str(proc_start) != start):
+                continue
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+        out.add(sid)
+    return out
+
+
+def check_days(
+    cfg: Config, days: list[str], root: Path | None = None, open_ids: set[str] | None = None,
+) -> list[DayReport]:
     by_day, on_disk = sessions_by_day(cfg, days, root)
+    if open_ids is None:
+        open_ids = open_session_ids(cfg)
     reports = []
     for day in days:
         active = by_day[day]
         active_ids = {s.session_id for s in active}
         filed = filed_session_ids(cfg, day)
+        unfiled = [s for s in active if s.session_id not in filed]
         reports.append(DayReport(
             day=day,
             active=active,
-            missing=[s for s in active if s.session_id not in filed],
+            missing=[s for s in unfiled if s.session_id not in open_ids],
+            open=[s for s in unfiled if s.session_id in open_ids],
             misfiled=[sid for sid in filed if sid in on_disk and sid not in active_ids],
             unverifiable=[sid for sid in filed if sid not in on_disk],
         ))

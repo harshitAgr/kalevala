@@ -1,4 +1,4 @@
-"""Call Sonnet to turn a transcript slice into a structured session summary."""
+"""Turn a transcript slice into a structured session summary."""
 from __future__ import annotations
 
 import datetime as _dt
