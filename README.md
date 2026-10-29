@@ -90,6 +90,7 @@ kalevala last              # yesterday's entry
 kalevala search <query>    # grep across all entries
 kalevala resume <query>    # print `claude --resume <id>` for the matching session
 kalevala drain             # manually retry queued commits/pushes
+kalevala sweep             # journal recent sessions that ended without running the hook
 kalevala status            # pending count, state health, error count
 kalevala check            # compare the 7 days before today with the transcripts on disk (--days N)
 kalevala check 2026-04-17 # one day; exits 1 if a session is missing or misfiled (sessions still running are listed as open and don't fail it)
@@ -126,6 +127,7 @@ Or from inside Claude Code:
 - **Prompt-injection mitigation** — transcript content is delimited and labeled "data only" in both system and user prompts
 - **File lock** (fcntl) serializes concurrent hook runs; lock timeouts queue rather than drop
 - **Retry queue** with exponential backoff for 429 and network failures
+- **Sweep** for sessions that end without `SessionEnd`: the background-agent daemon retires idle agents without firing it, and a killed terminal skips it. Each hook run also journals up to 3 transcripts written in the last 7 days that have turns past their cursor and whose process is gone; `kalevala sweep` does all of them at once
 - **Scrub threshold** safety net — if >20 redactions fire for one session, the write is aborted and queued for manual review
 
 ## Requirements
@@ -138,6 +140,7 @@ Or from inside Claude Code:
 
 - `kalevala status` — pending queue, state file health, recent error count
 - `kalevala drain` — manually retry queued pushes
+- `kalevala sweep` — journal sessions the hook never saw (retired background agents, killed terminals)
 - `kalevala check` — find days whose entry disagrees with the transcripts; `kalevala rebuild <date>` fixes one
 - `kalevala hook --verify-scrub --transcript-path <path>` — dry-run the scrubber against any transcript
 - Errors go to `<log_repo>/.kalevala/errors.log` and `~/.kalevala/hook.err`

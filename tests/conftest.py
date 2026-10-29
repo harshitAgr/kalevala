@@ -36,6 +36,8 @@ def tmp_config(tmp_path: Path, tmp_log_repo: Path, monkeypatch) -> Path:
         'git_branch = "main"\n'
     )
     monkeypatch.setenv("KALEVALA_CONFIG", str(config_file))
+    # the hook sweeps <claude dir>/projects; never let a test reach the real ~/.claude
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     return config_file
 
 

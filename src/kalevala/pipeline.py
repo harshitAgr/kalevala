@@ -10,7 +10,8 @@ Pipeline:
   6. Check scrub threshold → merge into that day's file
   7. git commit + push
   8. Update state
-  9. Release lock
+  9. Sweep: journal recent sessions that ended without running the hook
+ 10. Release lock
 
 A session is filed under the days its turns were written, not the day the
 hook runs: a session closed the morning after is still yesterday's work.
@@ -224,10 +225,15 @@ def _process_session(
     today: str,
     session_id: str,
     transcript_path: Path,
+    project_dir: str = "",
 ) -> bool:
+    """Journal the session's turns since its cursor. `project_dir` is only
+    passed for the hook's own session ($CLAUDE_PROJECT_DIR is that session's);
+    any other session uses the cwd of its first turn."""
     if not transcript_path.exists():
-        _log_error(cfg, f"transcript missing: {transcript_path}")
-        raise FileNotFoundError(f"transcript missing: {transcript_path}")
+        # never written: closed before the first prompt, a /resume launcher,
+        # or a --no-session-persistence run; there is nothing to journal
+        return False
 
     state = State(cfg)
     cursor = state.get(session_id)
@@ -244,7 +250,7 @@ def _process_session(
     # each day with new turns is re-summarized whole, so the merge can replace
     # that day's block without losing what an earlier run of this session wrote
     days = sorted({turn_day(t, cfg, today) for t in new_turns})
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "") or turns[0].cwd
+    project_dir = project_dir or turns[0].cwd
 
     summaries: list[tuple[str, SessionSummary]] = []
     for day in days:
@@ -284,6 +290,64 @@ def _process_session(
     return True
 
 
+SWEEP_DAYS = 7    # a session retired over a weekend is still caught on Monday
+SWEEP_LIMIT = 3   # summaries per hook run; the lock is held meanwhile, so later hooks queue
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def sweep_unended(
+    cfg: Config,
+    client: Any,
+    today: str,
+    *,
+    skip: frozenset[str] | set[str] = frozenset(),
+    limit: int | None = SWEEP_LIMIT,
+    root: Path | None = None,
+    open_ids: set[str] | None = None,
+) -> list[str]:
+    """Journal sessions that ended without running the hook: the background
+    agent daemon retires idle agents without firing SessionEnd, and a killed
+    terminal skips it too. Their transcripts are on disk with turns past the
+    cursor. Looks at transcripts written in the last SWEEP_DAYS, oldest first;
+    leaves running sessions to their own hook and queued ones to the drain.
+    Call with the lock held. Returns the ids journaled; never raises."""
+    journaled: list[str] = []
+    try:
+        from .rebuild import open_session_ids  # rebuild imports this module
+        if open_ids is None:
+            open_ids = open_session_ids(cfg)
+        queued = {it.get("session_id") for it in _read_pending(cfg) if it.get("kind") == "session"}
+        since = _dt.datetime.now().timestamp() - SWEEP_DAYS * 86400
+        paths = sorted(
+            (p for p in (root or cfg.transcripts_dir).glob("*/*.jsonl") if _mtime(p) >= since),
+            key=_mtime,
+        )
+    except Exception as e:
+        _log_error(cfg, f"sweep failure: {e}")
+        return journaled
+    attempts = 0
+    for path in paths:
+        sid = path.stem
+        if sid in skip or sid in open_ids or sid in queued:
+            continue
+        if limit is not None and attempts >= limit:
+            break
+        try:
+            if _process_session(cfg=cfg, client=client, today=today, session_id=sid, transcript_path=path):
+                journaled.append(sid)
+                attempts += 1
+        except Exception as e:
+            attempts += 1  # a failed summary counts: it may have waited out the client timeout
+            _log_error(cfg, f"sweep failure {sid}: {e}")
+    return journaled
+
+
 def run_hook(
     session_id: str,
     transcript_path: Path,
@@ -296,10 +360,14 @@ def run_hook(
     try:
         with FileLock(cfg.lock_path, wait_seconds=cfg.lock_wait_seconds):
             _drain_pending(cfg, client, today)
-            processed = _process_session(
-                cfg=cfg, client=client, today=today,
-                session_id=session_id, transcript_path=transcript_path,
-            )
+            try:
+                processed = _process_session(
+                    cfg=cfg, client=client, today=today,
+                    session_id=session_id, transcript_path=transcript_path,
+                    project_dir=os.environ.get("CLAUDE_PROJECT_DIR", ""),
+                )
+            finally:
+                sweep_unended(cfg, client, today, skip={session_id})
             return HookResult(processed=processed)
     except LockTimeout:
         try:

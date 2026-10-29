@@ -61,11 +61,24 @@ def test_second_run_same_session_is_idempotent(tmp_config: Path, tmp_path: Path)
 
 def test_hook_never_raises(tmp_config: Path, tmp_path: Path):
     cfg = load_config()
-    transcript = tmp_path / "missing.jsonl"  # doesn't exist
-    client = _mock_client({})
+    transcript = _transcript(tmp_path / "t.jsonl")
+    client = MagicMock()
+    client.messages.create.side_effect = TimeoutError("simulated summary timeout")
     result = run_hook("abc", transcript, cfg, client, today="2026-04-17")
     assert result.processed is False
     assert result.error is not None
+
+
+def test_missing_transcript_is_a_quiet_no_op(tmp_config: Path, tmp_path: Path):
+    """A session closed before its first prompt never writes a transcript; that is not a failure."""
+    cfg = load_config()
+    client = MagicMock()
+    client.messages.create.side_effect = AssertionError("the model must not be called")
+
+    result = run_hook("abc", tmp_path / "missing.jsonl", cfg, client, today="2026-04-17")
+
+    assert result.processed is False and result.error is None
+    assert not cfg.errors_log.exists() or "transcript missing" not in cfg.errors_log.read_text()
 
 
 def test_empty_transcript_first_run_skips_llm(tmp_config: Path, tmp_path: Path):

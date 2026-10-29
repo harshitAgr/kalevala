@@ -227,6 +227,22 @@ def cmd_drain(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def cmd_sweep(args: argparse.Namespace, cfg: Config) -> int:
+    from .lock import FileLock, LockTimeout
+    from .pipeline import sweep_unended
+    try:
+        with FileLock(cfg.lock_path, wait_seconds=cfg.lock_wait_seconds):
+            # no per-run limit: this is a manual catch-up, not a hook holding up others
+            journaled = sweep_unended(cfg, _client(), _today(cfg), limit=None)
+    except LockTimeout:
+        print("[kalevala] journal is locked by a running hook; try again", file=sys.stderr)
+        return 1
+    for sid in journaled:
+        print(f"journaled  {sid}")
+    print(f"sweep complete: {len(journaled)} journaled")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="kalevala")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -250,6 +266,7 @@ def main() -> int:
 
     sub.add_parser("status")
     sub.add_parser("drain")
+    sub.add_parser("sweep", help="journal recent sessions that ended without running the hook")
 
     p_check = sub.add_parser("check", help="compare entries with the transcripts on disk")
     p_check.add_argument("dates", nargs="*", type=_iso_date, help="YYYY-MM-DD (default: the --days days before today)")
@@ -269,7 +286,7 @@ def main() -> int:
         "hook": cmd_hook, "note": cmd_note, "todo": cmd_todo,
         "show": cmd_show, "last": cmd_last,
         "search": cmd_search, "resume": cmd_resume,
-        "drain": cmd_drain, "status": cmd_status,
+        "drain": cmd_drain, "sweep": cmd_sweep, "status": cmd_status,
         "check": cmd_check, "rebuild": cmd_rebuild,
     }
     return handlers[args.cmd](args, cfg)
