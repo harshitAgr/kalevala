@@ -19,6 +19,14 @@ class Config:
     scrub_threshold: int = 20
     lock_wait_seconds: int = 30
     timezone: str = ""  # IANA name for journal days and times; empty = machine local
+    # dotenv-style files whose every value is scrubbed by exact match
+    secret_env_files: tuple[Path, ...] = ()
+
+    @property
+    def claude_json_path(self) -> Path:
+        """Claude Code's global config (holds the MCP servers' env and headers)."""
+        override = os.environ.get("CLAUDE_CONFIG_DIR")
+        return (Path(override) if override else Path.home()) / ".claude.json"
 
     @property
     def tzinfo(self) -> ZoneInfo | None:
@@ -82,6 +90,9 @@ def load_config() -> Config:
     with path.open("rb") as f:
         data = tomllib.load(f)
     log_repo_path = Path(data["log_repo_path"]).expanduser().resolve()
+    secret_env_files = data.get("secret_env_files", [])
+    if not isinstance(secret_env_files, list) or not all(isinstance(p, str) for p in secret_env_files):
+        raise ValueError(f"{path}: secret_env_files must be a list of file paths")
     return Config(
         log_repo_path=log_repo_path,
         model=data.get("model", "claude-sonnet-4-6"),
@@ -91,4 +102,5 @@ def load_config() -> Config:
         scrub_threshold=int(data.get("scrub_threshold", 20)),
         lock_wait_seconds=int(data.get("lock_wait_seconds", 30)),
         timezone=data.get("timezone", ""),
+        secret_env_files=tuple(Path(p).expanduser() for p in secret_env_files),
     )
