@@ -48,8 +48,13 @@ def cmd_hook(args: argparse.Namespace, cfg: Config) -> int:
         return 0  # our own summarization run ending; it has no transcript
     session_id, transcript_path = _resolve_hook_inputs(args)
     if args.verify_scrub:
+        from .literal_secrets import SecretSourceError
         from .scrubber import Scrubber
-        scrubber = Scrubber()
+        try:
+            scrubber = Scrubber.from_config(cfg)
+        except SecretSourceError as e:
+            print(f"[kalevala] {e}", file=sys.stderr)
+            return 1
         text = Path(transcript_path).read_text()
         _, counts = scrubber.scrub(text)
         print(f"scrub report: {counts}")

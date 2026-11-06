@@ -171,8 +171,7 @@ def _project_name(project_dir: str) -> str:
     return project_dir.rstrip("/").rsplit("/", 1)[-1] or "unknown"
 
 
-def _scrub_summary_fields(summary_dict: dict) -> tuple[dict, int]:
-    scrubber = Scrubber()
+def _scrub_summary_fields(summary_dict: dict, scrubber: Scrubber) -> tuple[dict, int]:
     total = 0
     out: dict[str, Any] = {}
     for k, v in summary_dict.items():
@@ -200,6 +199,10 @@ def summarize_day(
 ) -> tuple[SessionSummary, int]:
     """Summarize one session's turns from one day; return the normalized,
     scrubbed summary and the number of redactions made."""
+    # Built before the model call: if a secret source is unreadable, fail closed
+    # without spending a summary. The cursor does not advance, so the sweep
+    # journals the session once the source is fixed.
+    scrubber = Scrubber.from_config(cfg)
     summary = summarize_turns(day_turns, cfg, client)
     summary_dict = normalize_paths(
         summary.model_dump(),
@@ -207,7 +210,7 @@ def summarize_day(
         project_dir=project_dir,
         project_name=summary.project or _project_name(project_dir),
     )
-    summary_dict, total_redactions = _scrub_summary_fields(summary_dict)
+    summary_dict, total_redactions = _scrub_summary_fields(summary_dict, scrubber)
     return SessionSummary(**summary_dict), total_redactions
 
 

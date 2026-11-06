@@ -109,3 +109,42 @@ def test_private_key_long_body_redacted():
     assert "BEGIN RSA PRIVATE KEY" not in result
     assert "END RSA PRIVATE KEY" not in result
     assert r.get("private_key") == 1
+
+
+# --- exact-value (literal) secrets -------------------------------------------
+
+LIT = "fake0token0a1b2c3d4e5f6a7b8c9d0e1f2a3b4"  # shapeless 40-char token, not a real credential
+
+
+def test_shapeless_token_passes_regexes_but_literal_catches_it():
+    text = f"I rotated the token {LIT} and re-ran"
+    plain, _ = Scrubber().scrub(text)
+    assert LIT in plain                       # the gap: no regex matches this shape
+    result, r = Scrubber(literals=(LIT,)).scrub(text)
+    assert LIT not in result
+    assert "[REDACTED:literal]" in result
+    assert r["literal"] == 1
+
+
+def test_literal_redacts_every_occurrence_and_counts_each():
+    result, r = Scrubber(literals=(LIT,)).scrub(f"{LIT}, again {LIT}; env CODABENCH_API_TOKEN={LIT}")
+    assert LIT not in result
+    assert r["literal"] == 3
+
+
+def test_longer_literal_wins_over_a_contained_one():
+    result, _ = Scrubber(literals=(LIT + "tail", LIT)).scrub(f"value {LIT}tail end")
+    assert "tail" not in result.replace("[REDACTED:literal]", "")
+    assert result.count("[REDACTED:literal]") == 1
+
+
+def test_literal_runs_before_regexes_so_no_double_count():
+    key = "sk-ant-api03-" + "x" * 40
+    result, r = Scrubber(literals=(key,)).scrub(f"k={key}")
+    assert r == {"literal": 1}
+    assert result.count("[REDACTED:") == 1
+
+
+def test_no_literals_is_unchanged_behaviour():
+    text = "nothing secret here"
+    assert Scrubber(literals=()).scrub(text) == (text, {})

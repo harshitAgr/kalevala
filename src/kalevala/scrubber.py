@@ -5,10 +5,15 @@ broader patterns don't misclassify. Each match is replaced by an inert
 sentinel `«KR:type:len»`; later patterns cannot match the sentinel
 because the guillemet delimiters and `KR:` prefix don't appear in any
 pattern. Before return, sentinels are rewritten to `[REDACTED:type]`.
+
+Exact secret values known on this machine (see `literal_secrets`) are redacted
+first, as type `literal`, so shapeless tokens that no regex matches are caught.
 """
 from __future__ import annotations
 
+import os
 import re2
+from collections.abc import Mapping
 from dataclasses import dataclass
 import re as _re
 
@@ -37,9 +42,29 @@ _SENTINEL_RE = _re.compile(r"«KR:([a-z_]+):\d+»")
 
 @dataclass
 class Scrubber:
+    # Exact secret values known on this machine (see literal_secrets), longest
+    # first. They run before the regexes: an exact match is the stronger signal.
+    literals: tuple[str, ...] = ()
+
+    @classmethod
+    def from_config(cls, cfg, env: Mapping[str, str] | None = None) -> "Scrubber":
+        """A scrubber that also redacts this machine's known secret values.
+        Raises SecretSourceError if a configured source cannot be read."""
+        from .literal_secrets import collect
+        return cls(literals=collect(
+            env=os.environ if env is None else env,
+            claude_json=cfg.claude_json_path,
+            dotenv_files=cfg.secret_env_files,
+        ))
+
     def scrub(self, text: str) -> tuple[str, dict[str, int]]:
         counts: dict[str, int] = {}
         out = text
+        for literal in self.literals:
+            n = out.count(literal)
+            if n:
+                counts["literal"] = counts.get("literal", 0) + n
+                out = out.replace(literal, f"«KR:literal:{len(literal)}»")
         for name, pat in _PATTERNS:
             def _sub(m, _name=name):
                 counts[_name] = counts.get(_name, 0) + 1

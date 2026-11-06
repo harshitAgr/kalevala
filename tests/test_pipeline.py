@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 from kalevala.config import load_config
 from kalevala.pipeline import run_hook
+from kalevala.state import State
 
 
 def _mock_client(payload: dict) -> MagicMock:
@@ -43,6 +44,68 @@ def test_first_run_creates_daily_entry(tmp_config: Path, tmp_log_repo: Path, tmp
     daily = cfg.entries_dir / "2026" / "04" / "2026-04-17.md"
     assert daily.exists()
     assert "abc123" in daily.read_text()
+
+
+LEAKED = "fake0token0a1b2c3d4e5f6a7b8c9d0e1f2a3b4"  # shapeless 40-char token, not a real credential
+
+
+def _quoting_client(secret: str) -> MagicMock:
+    """A summariser that quotes the secret, as one did into a pushed journal entry."""
+    return _mock_client({
+        "summary": f"rotated the token {secret} for the codabench MCP",
+        "files_touched": [], "commits": [], "bugs_fixed": [], "decisions": [],
+        "learnings": [f"the old value was {secret}"], "notes_for_later": [], "open_threads": [],
+        "time_range": ["10:00", "10:30"], "project": "myapp",
+    })
+
+
+def _entries_text(cfg) -> str:
+    return "".join(p.read_text() for p in cfg.entries_dir.rglob("*.md"))
+
+
+def test_secret_in_environment_is_redacted_from_the_journal(tmp_config: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("KT_TEST_API_TOKEN", LEAKED)
+    cfg = load_config()
+    result = run_hook("abc", _transcript(tmp_path / "t.jsonl"), cfg, _quoting_client(LEAKED), today="2026-04-17")
+    assert result.processed is True
+    text = _entries_text(cfg)
+    assert LEAKED not in text
+    assert "[REDACTED:literal]" in text
+
+
+def test_secret_in_claude_mcp_config_is_redacted_from_the_journal(tmp_config: Path, tmp_path: Path):
+    cfg = load_config()
+    cfg.claude_json_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.claude_json_path.write_text(json.dumps(
+        {"mcpServers": {"codabench": {"env": {"CODABENCH_API_TOKEN": LEAKED}}}}))
+    result = run_hook("abc", _transcript(tmp_path / "t.jsonl"), cfg, _quoting_client(LEAKED), today="2026-04-17")
+    assert result.processed is True
+    assert LEAKED not in _entries_text(cfg)
+
+
+def test_secret_in_a_declared_env_file_is_redacted_from_the_journal(tmp_config: Path, tmp_path: Path):
+    env_file = tmp_path / "tool.env"
+    env_file.write_text(f"CODABENCH_API_TOKEN={LEAKED}\n")
+    tmp_config.write_text(tmp_config.read_text() + f'secret_env_files = ["{env_file}"]\n')
+    cfg = load_config()
+    result = run_hook("abc", _transcript(tmp_path / "t.jsonl"), cfg, _quoting_client(LEAKED), today="2026-04-17")
+    assert result.processed is True
+    assert LEAKED not in _entries_text(cfg)
+
+
+def test_unreadable_secret_source_fails_closed_without_calling_the_model(tmp_config: Path, tmp_path: Path):
+    cfg = load_config()
+    cfg.claude_json_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.claude_json_path.write_text('{"mcpServers": {')  # truncated, as when read mid-write
+    client = _quoting_client(LEAKED)
+
+    result = run_hook("abc", _transcript(tmp_path / "t.jsonl"), cfg, client, today="2026-04-17")
+
+    assert result.processed is False
+    assert "cannot read MCP secrets" in (result.error or "")
+    client.messages.create.assert_not_called()
+    assert not list(cfg.entries_dir.rglob("*.md"))      # nothing journaled
+    assert State(cfg).get("abc") is None                # cursor not advanced: the sweep retries it
 
 
 def test_second_run_same_session_is_idempotent(tmp_config: Path, tmp_path: Path):

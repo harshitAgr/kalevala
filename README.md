@@ -45,6 +45,8 @@ git_remote = "origin"
 git_branch = "main"
 scrub_threshold = 20
 lock_wait_seconds = 30
+# optional: dotenv-style files whose every value is scrubbed by exact match
+secret_env_files = ["~/.config/mytool/env"]
 ```
 
 Make sure `~/projects/kalevala-log/` is a git repo with a remote pointing at your private journal repo.
@@ -123,6 +125,7 @@ Or from inside Claude Code:
 
 - **Atomic writes** (tempfile + `os.replace`) — the daily markdown file is always valid
 - **Secret scrubber** (RE2 regex, no ReDoS) redacts API keys, tokens, private keys, AWS creds, bearer tokens, JWTs, env-var-style leaks
+- **Exact-value scrubbing** catches secrets that have no recognisable shape (a 40-hex API token, a database password). The scrubber also redacts, by exact match, the values of environment variables named like `*_TOKEN`, `*_KEY`, `*SECRET`, `*PASSWORD`; the `env` and `headers` of every MCP server in `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`); and every value in the files listed in `secret_env_files`. Values under 16 characters (8 for `secret_env_files`), plain URLs, existing file paths and `${VAR}` references are skipped so ordinary text is not eaten. If a source cannot be read, the session is not journaled (its cursor stays put, and the sweep picks it up once fixed) rather than scrubbed with fewer secrets. It only knows secrets that exist on this machine now: an altered or truncated copy of a secret, or one that has since been rotated away, is not caught
 - **Path normalizer** rewrites absolute paths (`$HOME` → `~/`, `$CLAUDE_PROJECT_DIR` → `<project>/`) so machine layout doesn't leak
 - **Prompt-injection mitigation** — transcript content is delimited and labeled "data only" in both system and user prompts
 - **File lock** (fcntl) serializes concurrent hook runs; lock timeouts queue rather than drop
