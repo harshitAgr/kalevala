@@ -238,7 +238,7 @@ def cmd_sweep(args: argparse.Namespace, cfg: Config) -> int:
     try:
         with FileLock(cfg.lock_path, wait_seconds=cfg.lock_wait_seconds):
             # no per-run limit: this is a manual catch-up, not a hook holding up others
-            journaled = sweep_unended(cfg, _client(), _today(cfg), limit=None)
+            journaled = sweep_unended(cfg, _client(), _today(cfg), limit=None, retry_failed=True)
     except LockTimeout:
         print("[kalevala] journal is locked by a running hook; try again", file=sys.stderr)
         return 1

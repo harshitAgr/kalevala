@@ -64,6 +64,10 @@ class Config:
         return self.state_dir / "pending.json"
 
     @property
+    def sweep_failures_file(self) -> Path:
+        return self.state_dir / "sweep_failures.json"
+
+    @property
     def status_file(self) -> Path:
         return self.state_dir / "status.json"
 

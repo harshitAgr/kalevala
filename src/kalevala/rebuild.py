@@ -77,9 +77,14 @@ def sessions_by_day(
     root = root or cfg.transcripts_dir
     earliest = _day_start_timestamp(min(days), cfg)
     out: dict[str, list[DaySession]] = {d: [] for d in days}
-    on_disk: set[str] = set()
+    # a transcript copied into a second project dir keeps its session id;
+    # read each id once, from its newest copy
+    newest: dict[str, Path] = {}
     for path in sorted(root.glob("*/*.jsonl")):
-        on_disk.add(path.stem)
+        if path.stem not in newest or path.stat().st_mtime > newest[path.stem].stat().st_mtime:
+            newest[path.stem] = path
+    on_disk: set[str] = set(newest)
+    for path in newest.values():
         if path.stat().st_mtime < earliest:
             continue  # last written before the first day asked about
         stamped = [t for t in load_turns(path) if t.timestamp is not None]

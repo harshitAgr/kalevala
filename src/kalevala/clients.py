@@ -61,16 +61,28 @@ class ClaudeCliClient:
         if system:
             args.extend(["--append-system-prompt", system])
 
-        result = subprocess.run(
-            args,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_seconds,
-            check=True,
-            cwd=os.environ.get("HOME", str(Path.home())),
-            env={**os.environ, INTERNAL_ENV: "1"},
-        )
+        # errors name the CLI's own message, not the argv: the argv carries the
+        # whole system prompt and said nothing about why a call failed
+        try:
+            result = subprocess.run(
+                args,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=True,
+                cwd=os.environ.get("HOME", str(Path.home())),
+                env={**os.environ, INTERNAL_ENV: "1"},
+            )
+        except subprocess.CalledProcessError as e:
+            detail = " ".join(((e.stderr or "") + " " + (e.stdout or "")).split())[-500:]
+            raise RuntimeError(
+                f"claude --print exited {e.returncode} ({len(prompt)} chars in): {detail or 'no output'}"
+            ) from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"claude --print timed out after {self.timeout_seconds}s ({len(prompt)} chars in)"
+            ) from None
         return SimpleNamespace(content=[SimpleNamespace(text=result.stdout)])
 
 

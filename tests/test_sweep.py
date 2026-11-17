@@ -88,8 +88,44 @@ def test_sweep_logs_a_failure_and_carries_on(setup):
     client.messages.create.side_effect = create
 
     assert sweep_unended(cfg, client, "2026-10-29", root=root, open_ids=set()) == ["fine"]
-    assert "sweep failure flaky: simulated summary timeout" in cfg.errors_log.read_text()
-    assert State(cfg).get("flaky") is None  # so the next sweep tries it again
+    assert "sweep failure flaky (failure 1, next try in 1 h): simulated summary timeout" in cfg.errors_log.read_text()
+    assert State(cfg).get("flaky") is None  # so a later sweep tries it again
+
+
+def test_sweep_backs_off_a_session_that_keeps_failing(setup):
+    cfg, root = setup
+    _session(root, "poison", "2026-10-27T09:00:00Z")
+    client = recording_client()
+    ok = client.messages.create.return_value
+    client.messages.create.side_effect = TimeoutError("simulated summary timeout")
+
+    assert sweep_unended(cfg, client, "2026-10-29", root=root, open_ids=set()) == []
+    assert client.messages.create.call_count == 1
+    # the next hook's sweep leaves it alone instead of waiting out another timeout
+    assert sweep_unended(cfg, client, "2026-10-29", root=root, open_ids=set()) == []
+    assert client.messages.create.call_count == 1
+    assert json.loads(cfg.sweep_failures_file.read_text())["poison"]["count"] == 1
+
+    # a manual `kalevala sweep` retries it; success clears the record
+    client.messages.create.side_effect = None
+    client.messages.create.return_value = ok
+    assert sweep_unended(cfg, client, "2026-10-29", root=root, open_ids=set(), retry_failed=True) == ["poison"]
+    assert json.loads(cfg.sweep_failures_file.read_text()) == {}
+
+
+def test_sweep_reads_a_copied_transcript_once_from_its_newest_copy(setup):
+    cfg, root = setup
+    stale = _session(root, "copied", "2026-10-27T09:00:00Z", project="old", age_days=2)
+    newer = root / "-home-u-projects-new" / "copied.jsonl"
+    newer.parent.mkdir(parents=True)
+    newer.write_text(stale.read_text() + json.dumps(
+        {**turn(2, "2026-10-27T10:00:00Z"), "message": {"role": "user", "content": "one more"}}) + "\n")
+    client = recording_client()
+
+    assert sweep_unended(cfg, client, "2026-10-29", root=root, open_ids=set()) == ["copied"]
+    assert client.messages.create.call_count == 1
+    assert "one more" in prompts(client)[0]
+    assert State(cfg).get("copied").last_processed_msg_idx == 2
 
 
 def test_hook_sweeps_after_its_own_session_with_each_sessions_own_project_dir(setup, tmp_path, monkeypatch):
@@ -122,3 +158,24 @@ def test_cli_sweep_prints_what_it_journaled(setup, monkeypatch, capsys):
     assert cli.main() == 0
     out = capsys.readouterr().out
     assert "journaled  retired" in out and "sweep complete: 1 journaled" in out
+
+
+def test_hook_takes_sessions_queued_while_it_held_the_lock(setup):
+    from kalevala.pipeline import _queue_pending
+    cfg, root = setup
+    own = _session(root, "own", "2026-10-29T08:00:00Z")
+    waiter = _session(root, "waiter", "2026-10-29T08:30:00Z")
+    client = recording_client()
+    ok = client.messages.create.return_value
+
+    def create(**kwargs):
+        if "work in own" in kwargs["messages"][0]["content"]:
+            # another session ends now, times out on the lock and queues itself
+            _queue_pending(cfg, {"kind": "session", "session_id": "waiter",
+                                 "transcript_path": str(waiter), "reason": "lock_timeout"}, due_now=True)
+        return ok
+    client.messages.create.side_effect = create
+
+    assert run_hook("own", own, cfg, client, today="2026-10-29").processed is True
+    assert State(cfg).get("waiter") is not None
+    assert json.loads(cfg.pending_file.read_text()) == []
