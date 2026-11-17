@@ -221,9 +221,11 @@ def _extract_json(text: str) -> str:
     return t
 
 
-# One summary call gets one day of one session. A 668k-char day overflowed the
-# model's context and failed on every retry; 463k-char days went through.
-MAX_BODY_CHARS = 400_000
+# One summary call gets one day of one session. The only day that kept failing
+# (668k chars) was also the only one over 200k input tokens (~240k), the
+# long-context tier; a 463k-char day went through. Transcripts run ~2.6 chars
+# per token, so this keeps a prompt near 140k tokens.
+MAX_BODY_CHARS = 360_000
 _MIN_TURN_CHARS = 200
 _CUT_MARK_CHARS = 24  # room for " …[N chars cut]"
 

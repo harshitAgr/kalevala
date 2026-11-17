@@ -108,6 +108,20 @@ def test_format_body_leaves_out_the_middle_when_no_cap_can_fit():
     assert "turns left out" in body
 
 
+def test_cli_client_runs_without_tools_or_mcp_servers(monkeypatch):
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return MagicMock(stdout="{}")
+    monkeypatch.setattr(clients.subprocess, "run", fake_run)
+
+    clients.ClaudeCliClient().messages.create(model="m", messages=[{"role": "user", "content": "hi"}])
+
+    args = seen["args"]
+    assert args[args.index("--tools") + 1] == "" and "--strict-mcp-config" in args
+
+
 def test_cli_client_reports_the_cli_error_not_the_argv(monkeypatch):
     def fail(args, **kwargs):
         raise subprocess.CalledProcessError(1, args, output="", stderr="Prompt is too long")

@@ -57,6 +57,10 @@ class ClaudeCliClient:
             "--model", model,
             "--no-session-persistence",
             "--output-format", "text",
+            # a summary is one reply, no tool calls; the default tool and MCP
+            # definitions added ~21k input tokens to every call
+            "--tools", "",
+            "--strict-mcp-config",
         ]
         if system:
             args.extend(["--append-system-prompt", system])
@@ -83,6 +87,10 @@ class ClaudeCliClient:
             raise RuntimeError(
                 f"claude --print timed out after {self.timeout_seconds}s ({len(prompt)} chars in)"
             ) from None
+        if not result.stdout.strip():
+            # seen now and then on the same prompt that succeeds on a retry
+            detail = " ".join((result.stderr or "").split())[-500:]
+            raise RuntimeError(f"claude --print exited 0 with no output ({len(prompt)} chars in): {detail}")
         return SimpleNamespace(content=[SimpleNamespace(text=result.stdout)])
 
 
