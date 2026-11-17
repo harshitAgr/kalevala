@@ -205,7 +205,8 @@ def summarize_day(
     scrubbed summary and the number of redactions made."""
     # Built before the model call: if a secret source is unreadable, fail closed
     # without spending a summary. The cursor does not advance, so the sweep
-    # journals the session once the source is fixed.
+    # journals the session once the source is fixed: within SWEEP_BACKOFF_HOURS,
+    # or at once with `kalevala sweep`.
     scrubber = Scrubber.from_config(cfg)
     summary = summarize_turns(day_turns, cfg, client)
     summary_dict = normalize_paths(
@@ -312,12 +313,40 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def newest_transcripts(root: Path, since: float = 0.0) -> list[Path]:
+    """One transcript per session id, last written at or after `since`, oldest
+    first. A transcript copied into a second project dir keeps its session id;
+    the copy written last wins, then the larger, then the path, so every
+    caller picks the same one."""
+    newest: dict[str, tuple[float, int, str, Path]] = {}
+    for p in root.glob("*/*.jsonl"):
+        key = (_mtime(p), _size(p), str(p), p)
+        if key[0] >= since and (p.stem not in newest or key[:3] > newest[p.stem][:3]):
+            newest[p.stem] = key
+    return [k[3] for k in sorted(newest.values(), key=lambda k: k[:3])]
+
+
 def _read_sweep_failures(cfg: Config) -> dict:
+    """Records that don't have the shape this module writes are dropped, so a
+    damaged file costs a retry, not the sweep."""
     try:
         loaded = json.loads(cfg.sweep_failures_file.read_text())
-        return loaded if isinstance(loaded, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(loaded, dict):
+        return {}
+    fields = ("count", "last_failed_at", "retry_at")
+    return {
+        sid: f for sid, f in loaded.items()
+        if isinstance(f, dict) and all(isinstance(f.get(k), (int, float)) for k in fields)
+    }
 
 
 def _write_sweep_failures(cfg: Config, failures: dict) -> None:
@@ -355,16 +384,10 @@ def sweep_unended(
         queued = {it.get("session_id") for it in _read_pending(cfg) if it.get("kind") == "session"}
         now = _dt.datetime.now().timestamp()
         since = now - SWEEP_DAYS * 86400
-        # a transcript copied into a second project dir keeps its session id;
-        # sweep each id once, from its newest copy
-        newest: dict[str, Path] = {}
-        for p in (root or cfg.transcripts_dir).glob("*/*.jsonl"):
-            if _mtime(p) >= since and (p.stem not in newest or _mtime(p) > _mtime(newest[p.stem])):
-                newest[p.stem] = p
-        paths = sorted(newest.values(), key=_mtime)
+        paths = newest_transcripts(root or cfg.transcripts_dir, since)
         stored = _read_sweep_failures(cfg)
         # a session past the sweep window is check/rebuild's business
-        failures = {sid: f for sid, f in stored.items() if f.get("last_failed_at", 0) >= since}
+        failures = {sid: f for sid, f in stored.items() if f["last_failed_at"] >= since}
     except Exception as e:
         _log_error(cfg, f"sweep failure: {e}")
         return journaled
@@ -374,7 +397,7 @@ def sweep_unended(
         if sid in skip or sid in open_ids or sid in queued:
             continue
         failed = failures.get(sid)
-        if failed and not retry_failed and now < failed.get("retry_at", 0):
+        if failed and not retry_failed and now < failed["retry_at"]:
             continue
         if limit is not None and attempts >= limit:
             break
@@ -382,15 +405,18 @@ def sweep_unended(
             if _process_session(cfg=cfg, client=client, today=today, session_id=sid, transcript_path=path):
                 journaled.append(sid)
                 attempts += 1
-            failures.pop(sid, None)
+            if failures.pop(sid, None) is not None:
+                _write_sweep_failures(cfg, failures)
         except Exception as e:
             attempts += 1  # a failed summary counts: it may have waited out the client timeout
             count = (failed or {}).get("count", 0) + 1
             wait_h = SWEEP_BACKOFF_HOURS[min(count, len(SWEEP_BACKOFF_HOURS)) - 1]
             failures[sid] = {"count": count, "last_failed_at": now, "retry_at": now + wait_h * 3600}
+            # written at once: a hook killed later in this loop still leaves the record
+            _write_sweep_failures(cfg, failures)
             _log_error(cfg, f"sweep failure {sid} (failure {count}, next try in {wait_h} h): {e}")
     if failures != stored:
-        _write_sweep_failures(cfg, failures)
+        _write_sweep_failures(cfg, failures)  # records that aged out of the window
     return journaled
 
 
@@ -415,8 +441,12 @@ def run_hook(
             finally:
                 sweep_unended(cfg, client, today, skip={session_id})
                 # hooks that timed out on the lock while this one held it
-                # queued their sessions; take them now, not at the next hook
-                _drain_pending(cfg, client, today)
+                # queued their sessions; take them now, not at the next hook.
+                # Its errors are logged, never this session's result.
+                try:
+                    _drain_pending(cfg, client, today)
+                except Exception as e:
+                    _log_error(cfg, f"closing drain failure: {e}")
             return HookResult(processed=processed)
     except LockTimeout:
         try:

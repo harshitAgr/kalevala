@@ -122,6 +122,29 @@ def test_cli_client_runs_without_tools_or_mcp_servers(monkeypatch):
     assert args[args.index("--tools") + 1] == "" and "--strict-mcp-config" in args
 
 
+def test_cli_client_sends_again_once_after_an_empty_reply(monkeypatch):
+    replies = ["", "{}"]
+    monkeypatch.setattr(clients.subprocess, "run",
+                        lambda args, **kw: MagicMock(stdout=replies.pop(0), stderr=""))
+
+    resp = clients.ClaudeCliClient().messages.create(model="m", messages=[{"role": "user", "content": "hi"}])
+
+    assert resp.content[0].text == "{}" and replies == []
+
+
+def test_cli_client_raises_after_two_empty_replies(monkeypatch):
+    calls = []
+
+    def empty(args, **kwargs):
+        calls.append(args)
+        return MagicMock(stdout="", stderr="")
+    monkeypatch.setattr(clients.subprocess, "run", empty)
+
+    with pytest.raises(RuntimeError, match="no output, twice"):
+        clients.ClaudeCliClient().messages.create(model="m", messages=[{"role": "user", "content": "hi"}])
+    assert len(calls) == 2
+
+
 def test_cli_client_reports_the_cli_error_not_the_argv(monkeypatch):
     def fail(args, **kwargs):
         raise subprocess.CalledProcessError(1, args, output="", stderr="Prompt is too long")

@@ -113,6 +113,51 @@ def test_sweep_backs_off_a_session_that_keeps_failing(setup):
     assert json.loads(cfg.sweep_failures_file.read_text()) == {}
 
 
+def test_sweep_keeps_a_failure_record_when_the_run_is_cut_short(setup, monkeypatch):
+    from kalevala import pipeline
+    cfg, root = setup
+    _session(root, "first", "2026-10-27T09:00:00Z", age_days=2)
+    _session(root, "second", "2026-10-27T10:00:00Z", age_days=1)
+    real = pipeline._process_session
+
+    def process(**kw):
+        if kw["session_id"] == "first":
+            raise TimeoutError("simulated summary timeout")
+        raise KeyboardInterrupt  # the hook is killed while summarizing the next one
+    monkeypatch.setattr(pipeline, "_process_session", process)
+
+    with pytest.raises(KeyboardInterrupt):
+        sweep_unended(cfg, recording_client(), "2026-10-29", root=root, open_ids=set())
+    assert json.loads(cfg.sweep_failures_file.read_text())["first"]["count"] == 1
+    monkeypatch.setattr(pipeline, "_process_session", real)
+
+
+def test_sweep_survives_a_damaged_failures_file(setup):
+    cfg, root = setup
+    _session(root, "retired", "2026-10-27T09:00:00Z")
+    cfg.sweep_failures_file.write_text(json.dumps({"retired": 1, "other": {"count": "x"}}))
+
+    assert sweep_unended(cfg, recording_client(), "2026-10-29", root=root, open_ids=set()) == ["retired"]
+    # damaged records are ignored on read and gone at the next write
+    _session(root, "flaky", "2026-10-27T10:00:00Z")
+    client = recording_client()
+    client.messages.create.side_effect = TimeoutError("simulated summary timeout")
+    sweep_unended(cfg, client, "2026-10-29", root=root, open_ids=set())
+    assert list(json.loads(cfg.sweep_failures_file.read_text())) == ["flaky"]
+
+
+def test_copies_with_the_same_mtime_resolve_to_the_larger_one(setup):
+    from kalevala.pipeline import newest_transcripts
+    cfg, root = setup
+    short = _session(root, "copied", "2026-10-27T09:00:00Z", project="a")
+    longer = root / "-home-u-projects-b" / "copied.jsonl"
+    longer.parent.mkdir(parents=True)
+    longer.write_text(short.read_text() * 2)
+    os.utime(longer, (short.stat().st_atime, short.stat().st_mtime))
+
+    assert newest_transcripts(root) == [longer]
+
+
 def test_sweep_reads_a_copied_transcript_once_from_its_newest_copy(setup):
     cfg, root = setup
     stale = _session(root, "copied", "2026-10-27T09:00:00Z", project="old", age_days=2)
@@ -179,3 +224,21 @@ def test_hook_takes_sessions_queued_while_it_held_the_lock(setup):
     assert run_hook("own", own, cfg, client, today="2026-10-29").processed is True
     assert State(cfg).get("waiter") is not None
     assert json.loads(cfg.pending_file.read_text()) == []
+
+
+def test_a_failing_closing_drain_does_not_change_the_hooks_result(setup, monkeypatch):
+    from kalevala import pipeline
+    cfg, root = setup
+    own = _session(root, "own", "2026-10-29T08:00:00Z")
+    drains = []
+
+    def drain(*args):
+        drains.append(args)
+        if len(drains) == 2:
+            raise KeyError("transcript_path")  # a damaged queue entry
+    monkeypatch.setattr(pipeline, "_drain_pending", drain)
+
+    result = run_hook("own", own, cfg, recording_client(), today="2026-10-29")
+
+    assert result.processed is True and result.error is None
+    assert "closing drain failure" in cfg.errors_log.read_text()

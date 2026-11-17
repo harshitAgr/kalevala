@@ -28,7 +28,7 @@ from .generator import SessionSummary, Turn, load_turns, local_time, turn_day
 from .git_sync import commit_and_push
 from .lock import FileLock
 from .merger import filed_session_ids, merge_session, reset_day
-from .pipeline import summarize_day, turns_by_day
+from .pipeline import _mtime, newest_transcripts, summarize_day, turns_by_day
 from .state import SessionCursor, State
 
 
@@ -77,15 +77,10 @@ def sessions_by_day(
     root = root or cfg.transcripts_dir
     earliest = _day_start_timestamp(min(days), cfg)
     out: dict[str, list[DaySession]] = {d: [] for d in days}
-    # a transcript copied into a second project dir keeps its session id;
-    # read each id once, from its newest copy
-    newest: dict[str, Path] = {}
-    for path in sorted(root.glob("*/*.jsonl")):
-        if path.stem not in newest or path.stat().st_mtime > newest[path.stem].stat().st_mtime:
-            newest[path.stem] = path
-    on_disk: set[str] = set(newest)
-    for path in newest.values():
-        if path.stat().st_mtime < earliest:
+    paths = newest_transcripts(root)  # one per session id; copies share it
+    on_disk: set[str] = {p.stem for p in paths}
+    for path in paths:
+        if _mtime(path) < earliest:
             continue  # last written before the first day asked about
         stamped = [t for t in load_turns(path) if t.timestamp is not None]
         if not stamped:

@@ -65,6 +65,16 @@ class ClaudeCliClient:
         if system:
             args.extend(["--append-system-prompt", system])
 
+        # an empty reply with exit 0 was seen now and then on a prompt that
+        # went through when sent again, so it gets one more try
+        for _ in range(2):
+            stdout, stderr = self._run(args, prompt)
+            if stdout.strip():
+                return SimpleNamespace(content=[SimpleNamespace(text=stdout)])
+        detail = " ".join(stderr.split())[-500:]
+        raise RuntimeError(f"claude --print exited 0 with no output, twice ({len(prompt)} chars in): {detail}")
+
+    def _run(self, args: list[str], prompt: str) -> tuple[str, str]:
         # errors name the CLI's own message, not the argv: the argv carries the
         # whole system prompt and said nothing about why a call failed
         try:
@@ -87,11 +97,7 @@ class ClaudeCliClient:
             raise RuntimeError(
                 f"claude --print timed out after {self.timeout_seconds}s ({len(prompt)} chars in)"
             ) from None
-        if not result.stdout.strip():
-            # seen now and then on the same prompt that succeeds on a retry
-            detail = " ".join((result.stderr or "").split())[-500:]
-            raise RuntimeError(f"claude --print exited 0 with no output ({len(prompt)} chars in): {detail}")
-        return SimpleNamespace(content=[SimpleNamespace(text=result.stdout)])
+        return result.stdout or "", result.stderr or ""
 
 
 def build_client() -> ClaudeCliClient:
