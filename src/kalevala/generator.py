@@ -221,13 +221,69 @@ def _extract_json(text: str) -> str:
     return t
 
 
+# One summary call gets one day of one session. The only day that kept failing
+# (668k chars) was also the only one over 200k input tokens (~240k), the
+# long-context tier; a 463k-char day went through. Transcripts run ~2.6 chars
+# per token, so this keeps a prompt near 140k tokens.
+MAX_BODY_CHARS = 360_000
+_MIN_TURN_CHARS = 200
+_CUT_MARK_CHARS = 24  # room for " …[N chars cut]"
+
+
+def _cut(line: str, cap: int) -> str:
+    if len(line) <= cap:
+        return line
+    return f"{line[:cap]} …[{len(line) - cap} chars cut]"
+
+
+def format_body(turns: list[Turn], budget: int = MAX_BODY_CHARS) -> str:
+    """The transcript text for one summary call, about `budget` chars at most.
+    A day that fits is sent whole. Otherwise every turn longer than a common
+    cap is cut to it, so short turns (most user prompts) stay intact; when
+    even a small cap cannot fit, the middle of the day is left out."""
+    lines = [f"[{t.role}] {t.content}" for t in turns]
+    body = "\n".join(lines)
+    if len(body) <= budget:
+        return body
+
+    def size(cap: int) -> int:
+        return sum(len(s) if len(s) <= cap else cap + _CUT_MARK_CHARS for s in lines) + len(lines)
+
+    lo, hi = 0, max(map(len, lines))  # largest cap that fits
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if size(mid) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    if lo >= _MIN_TURN_CHARS:
+        return "\n".join(_cut(s, lo) for s in lines)
+
+    cut = [_cut(s, _MIN_TURN_CHARS) for s in lines]
+    half = budget // 2
+
+    def take(seq: list[str]) -> list[str]:
+        kept, used = [], 0
+        for s in seq:
+            if used + len(s) + 1 > half:
+                break
+            kept.append(s)
+            used += len(s) + 1
+        return kept
+
+    head = take(cut)
+    tail = take(cut[len(head):][::-1])[::-1]
+    omitted = len(cut) - len(head) - len(tail)
+    return "\n".join([*head, f"[… {omitted} turns left out …]", *tail])
+
+
 def summarize_turns(turns: list[Turn], cfg: Config, client: Any) -> SessionSummary:
     """Summarize a non-empty run of turns. The time range comes from the turn
     timestamps when they exist; the model cannot see them, so its guess is
     only kept as a fallback."""
     if not turns:
         raise ValueError("no turns to summarize")
-    body = "\n".join(f"[{t.role}] {t.content}" for t in turns)
+    body = format_body(turns)
     summary = _call_model(body, cfg, client)
     update: dict[str, Any] = {"last_msg_uuid": turns[-1].uuid, "last_msg_idx": turns[-1].idx}
     stamps = [t.timestamp for t in turns if t.timestamp is not None]

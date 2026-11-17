@@ -57,21 +57,47 @@ class ClaudeCliClient:
             "--model", model,
             "--no-session-persistence",
             "--output-format", "text",
+            # a summary is one reply, no tool calls; the default tool and MCP
+            # definitions added ~21k input tokens to every call
+            "--tools", "",
+            "--strict-mcp-config",
         ]
         if system:
             args.extend(["--append-system-prompt", system])
 
-        result = subprocess.run(
-            args,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_seconds,
-            check=True,
-            cwd=os.environ.get("HOME", str(Path.home())),
-            env={**os.environ, INTERNAL_ENV: "1"},
-        )
-        return SimpleNamespace(content=[SimpleNamespace(text=result.stdout)])
+        # an empty reply with exit 0 was seen now and then on a prompt that
+        # went through when sent again, so it gets one more try
+        for _ in range(2):
+            stdout, stderr = self._run(args, prompt)
+            if stdout.strip():
+                return SimpleNamespace(content=[SimpleNamespace(text=stdout)])
+        detail = " ".join(stderr.split())[-500:]
+        raise RuntimeError(f"claude --print exited 0 with no output, twice ({len(prompt)} chars in): {detail}")
+
+    def _run(self, args: list[str], prompt: str) -> tuple[str, str]:
+        # errors name the CLI's own message, not the argv: the argv carries the
+        # whole system prompt and said nothing about why a call failed
+        try:
+            result = subprocess.run(
+                args,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=True,
+                cwd=os.environ.get("HOME", str(Path.home())),
+                env={**os.environ, INTERNAL_ENV: "1"},
+            )
+        except subprocess.CalledProcessError as e:
+            detail = " ".join(((e.stderr or "") + " " + (e.stdout or "")).split())[-500:]
+            raise RuntimeError(
+                f"claude --print exited {e.returncode} ({len(prompt)} chars in): {detail or 'no output'}"
+            ) from None
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"claude --print timed out after {self.timeout_seconds}s ({len(prompt)} chars in)"
+            ) from None
+        return result.stdout or "", result.stderr or ""
 
 
 def build_client() -> ClaudeCliClient:

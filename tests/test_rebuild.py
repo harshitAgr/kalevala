@@ -46,6 +46,20 @@ def test_check_reports_missing_and_misfiled(setup):
     assert not by_day["2026-10-13"].ok and not by_day["2026-10-14"].ok
 
 
+def test_check_counts_a_copied_transcript_once_from_its_newest_copy(setup):
+    cfg, root = setup
+    original = root / "-home-u-projects-myapp" / "s1.jsonl"
+    stale = root / "-home-u-projects-other" / "s1.jsonl"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(original.read_text().splitlines(keepends=True)[0])
+    os.utime(stale, (original.stat().st_mtime - 60,) * 2)
+
+    by_day = {r.day: r for r in check_days(cfg, ["2026-10-13"], root)}
+
+    [missing] = by_day["2026-10-13"].missing
+    assert missing.path == original and len(missing.turns) == 2
+
+
 def test_rebuild_moves_the_session_and_keeps_manual_notes(setup):
     cfg, root = setup
 

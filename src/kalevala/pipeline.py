@@ -11,7 +11,8 @@ Pipeline:
   7. git commit + push
   8. Update state
   9. Sweep: journal recent sessions that ended without running the hook
- 10. Release lock
+ 10. Drain again: sessions whose hooks queued them while this one held the lock
+ 11. Release lock
 
 A session is filed under the days its turns were written, not the day the
 hook runs: a session closed the morning after is still yesterday's work.
@@ -99,14 +100,17 @@ def _write_pending(cfg: Config, items: list) -> None:
         pass
 
 
-def _queue_pending(cfg: Config, entry: dict, attempts: int = 0) -> None:
+def _queue_pending(cfg: Config, entry: dict, attempts: int = 0, *, due_now: bool = False) -> None:
+    """`due_now`: nothing failed (the lock was busy), so the lock holder may
+    take the entry in its closing drain instead of the next hook run."""
     try:
         import uuid as _uuid
+        now = _dt.datetime.now().timestamp()
         augmented = {
             "queue_id": entry.get("queue_id") or _uuid.uuid4().hex,
             **entry,
             "attempts": attempts,
-            "next_retry_at": _dt.datetime.now().timestamp() + next_retry_delay_seconds(attempts),
+            "next_retry_at": now if due_now else now + next_retry_delay_seconds(attempts),
         }
         existing = _read_pending(cfg)
         existing.append(augmented)
@@ -201,7 +205,8 @@ def summarize_day(
     scrubbed summary and the number of redactions made."""
     # Built before the model call: if a secret source is unreadable, fail closed
     # without spending a summary. The cursor does not advance, so the sweep
-    # journals the session once the source is fixed.
+    # journals the session once the source is fixed: within SWEEP_BACKOFF_HOURS,
+    # or at once with `kalevala sweep`.
     scrubber = Scrubber.from_config(cfg)
     summary = summarize_turns(day_turns, cfg, client)
     summary_dict = normalize_paths(
@@ -295,6 +300,10 @@ def _process_session(
 
 SWEEP_DAYS = 7    # a session retired over a weekend is still caught on Monday
 SWEEP_LIMIT = 3   # summaries per hook run; the lock is held meanwhile, so later hooks queue
+# Hours a hook's sweep waits before retrying a session after its 1st, 2nd, 3rd+
+# failure. A failure can hold the lock for the whole client timeout (600 s),
+# so retrying on every hook run starved the hooks of other sessions.
+SWEEP_BACKOFF_HOURS = (1, 4, 24)
 
 
 def _mtime(path: Path) -> float:
@@ -302,6 +311,50 @@ def _mtime(path: Path) -> float:
         return path.stat().st_mtime
     except OSError:
         return 0.0
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def newest_transcripts(root: Path, since: float = 0.0) -> list[Path]:
+    """One transcript per session id, last written at or after `since`, oldest
+    first. A transcript copied into a second project dir keeps its session id;
+    the copy written last wins, then the larger, then the path, so every
+    caller picks the same one."""
+    newest: dict[str, tuple[float, int, str, Path]] = {}
+    for p in root.glob("*/*.jsonl"):
+        key = (_mtime(p), _size(p), str(p), p)
+        if key[0] >= since and (p.stem not in newest or key[:3] > newest[p.stem][:3]):
+            newest[p.stem] = key
+    return [k[3] for k in sorted(newest.values(), key=lambda k: k[:3])]
+
+
+def _read_sweep_failures(cfg: Config) -> dict:
+    """Records that don't have the shape this module writes are dropped, so a
+    damaged file costs a retry, not the sweep."""
+    try:
+        loaded = json.loads(cfg.sweep_failures_file.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    fields = ("count", "last_failed_at", "retry_at")
+    return {
+        sid: f for sid, f in loaded.items()
+        if isinstance(f, dict) and all(isinstance(f.get(k), (int, float)) for k in fields)
+    }
+
+
+def _write_sweep_failures(cfg: Config, failures: dict) -> None:
+    try:
+        cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        cfg.sweep_failures_file.write_text(json.dumps(failures, indent=2))
+    except Exception:
+        pass
 
 
 def sweep_unended(
@@ -313,12 +366,15 @@ def sweep_unended(
     limit: int | None = SWEEP_LIMIT,
     root: Path | None = None,
     open_ids: set[str] | None = None,
+    retry_failed: bool = False,
 ) -> list[str]:
     """Journal sessions that ended without running the hook: the background
     agent daemon retires idle agents without firing SessionEnd, and a killed
     terminal skips it too. Their transcripts are on disk with turns past the
     cursor. Looks at transcripts written in the last SWEEP_DAYS, oldest first;
     leaves running sessions to their own hook and queued ones to the drain.
+    A session whose summary failed waits out SWEEP_BACKOFF_HOURS unless
+    `retry_failed` (the manual `kalevala sweep`).
     Call with the lock held. Returns the ids journaled; never raises."""
     journaled: list[str] = []
     try:
@@ -326,11 +382,12 @@ def sweep_unended(
         if open_ids is None:
             open_ids = open_session_ids(cfg)
         queued = {it.get("session_id") for it in _read_pending(cfg) if it.get("kind") == "session"}
-        since = _dt.datetime.now().timestamp() - SWEEP_DAYS * 86400
-        paths = sorted(
-            (p for p in (root or cfg.transcripts_dir).glob("*/*.jsonl") if _mtime(p) >= since),
-            key=_mtime,
-        )
+        now = _dt.datetime.now().timestamp()
+        since = now - SWEEP_DAYS * 86400
+        paths = newest_transcripts(root or cfg.transcripts_dir, since)
+        stored = _read_sweep_failures(cfg)
+        # a session past the sweep window is check/rebuild's business
+        failures = {sid: f for sid, f in stored.items() if f["last_failed_at"] >= since}
     except Exception as e:
         _log_error(cfg, f"sweep failure: {e}")
         return journaled
@@ -339,15 +396,27 @@ def sweep_unended(
         sid = path.stem
         if sid in skip or sid in open_ids or sid in queued:
             continue
+        failed = failures.get(sid)
+        if failed and not retry_failed and now < failed["retry_at"]:
+            continue
         if limit is not None and attempts >= limit:
             break
         try:
             if _process_session(cfg=cfg, client=client, today=today, session_id=sid, transcript_path=path):
                 journaled.append(sid)
                 attempts += 1
+            if failures.pop(sid, None) is not None:
+                _write_sweep_failures(cfg, failures)
         except Exception as e:
             attempts += 1  # a failed summary counts: it may have waited out the client timeout
-            _log_error(cfg, f"sweep failure {sid}: {e}")
+            count = (failed or {}).get("count", 0) + 1
+            wait_h = SWEEP_BACKOFF_HOURS[min(count, len(SWEEP_BACKOFF_HOURS)) - 1]
+            failures[sid] = {"count": count, "last_failed_at": now, "retry_at": now + wait_h * 3600}
+            # written at once: a hook killed later in this loop still leaves the record
+            _write_sweep_failures(cfg, failures)
+            _log_error(cfg, f"sweep failure {sid} (failure {count}, next try in {wait_h} h): {e}")
+    if failures != stored:
+        _write_sweep_failures(cfg, failures)  # records that aged out of the window
     return journaled
 
 
@@ -371,6 +440,13 @@ def run_hook(
                 )
             finally:
                 sweep_unended(cfg, client, today, skip={session_id})
+                # hooks that timed out on the lock while this one held it
+                # queued their sessions; take them now, not at the next hook.
+                # Its errors are logged, never this session's result.
+                try:
+                    _drain_pending(cfg, client, today)
+                except Exception as e:
+                    _log_error(cfg, f"closing drain failure: {e}")
             return HookResult(processed=processed)
     except LockTimeout:
         try:
@@ -379,7 +455,7 @@ def run_hook(
                 "session_id": session_id,
                 "transcript_path": str(transcript_path),
                 "reason": "lock_timeout",
-            })
+            }, due_now=True)
         except Exception:
             pass
         return HookResult(processed=False, error="lock_timeout")
